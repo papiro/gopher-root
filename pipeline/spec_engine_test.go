@@ -18,12 +18,12 @@ func TestEngineSpec_PausePersistsAndResumeContinues(t *testing.T) {
 	_ = eng.Resume(context.Background())
 
 	// Expected behavior:
-	// 1) Pause requests all stages to Flush + Snapshot.
+	// 1) Pause requests all segments to Flush + Snapshot.
 	// 2) Acks up to the pause boundary are durable.
 	// 3) Resume continues from next uncommitted record, preserving ordering guarantees.
 }
 
-func TestEngineSpec_RetryUsesCompensationForNonIdempotentStage(t *testing.T) {
+func TestEngineSpec_RetryUsesCompensationForNonIdempotentSegment(t *testing.T) {
 	t.Skip("spec-only: implement once Engine runtime exists")
 
 	var eng pipeline.Engine[string, string]
@@ -31,8 +31,8 @@ func TestEngineSpec_RetryUsesCompensationForNonIdempotentStage(t *testing.T) {
 
 	// Expected behavior:
 	// 1) Retry can target a record lineage branch.
-	// 2) Non-idempotent stage runs Compensate before replay when partial side effects exist.
-	// 3) Final commit reflects exactly-once best-effort with dedup by stage+record identity.
+	// 2) Non-idempotent segment runs Compensate before replay when partial side effects exist.
+	// 3) Final commit reflects exactly-once best-effort with dedup by segment+record identity.
 }
 
 func TestEngineSpec_TraceSourceToZeroOrManyOutputs(t *testing.T) {

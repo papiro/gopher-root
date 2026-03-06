@@ -2,6 +2,8 @@ package pipeline_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/pierre/gopher-root/pipeline"
@@ -13,72 +15,85 @@ func (noopCompensator) Compensate(context.Context, pipeline.RecordID, pipeline.A
 	return nil
 }
 
-type fakeProducer struct {
-	items []pipeline.Envelope[string]
+type fakeSource struct {
+	items []pipeline.SourceRecord[string]
 	idx   int
 }
 
-func (p *fakeProducer) Next(_ context.Context) (pipeline.Envelope[string], bool, error) {
+func (p *fakeSource) Next(_ context.Context) (pipeline.SourceRecord[string], bool, error) {
 	if p.idx >= len(p.items) {
-		return pipeline.Envelope[string]{}, false, nil
+		return pipeline.SourceRecord[string]{}, false, nil
 	}
 	item := p.items[p.idx]
 	p.idx++
 	return item, true, nil
 }
 
-type fakeConsumer struct {
+type fakeSink struct {
 	received []pipeline.Envelope[string]
 	doneCall int
 }
 
-func (c *fakeConsumer) Consume(_ context.Context, item pipeline.Envelope[string]) error {
+type fakeCoupling struct {
+	out json.RawMessage
+	err error
+}
+
+func (f fakeCoupling) Couple(json.RawMessage) (json.RawMessage, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.out, nil
+}
+
+func (c *fakeSink) Consume(_ context.Context, item pipeline.Envelope[string]) error {
 	c.received = append(c.received, item)
 	return nil
 }
 
-func (c *fakeConsumer) Done(context.Context) error {
+func (c *fakeSink) Done(context.Context) error {
 	c.doneCall++
 	return nil
 }
 
-type fakeStage struct {
-	desc        pipeline.StageDescriptor
+type fakeSegment struct {
+	desc        pipeline.SegmentDescriptor
 	compensator pipeline.Compensator
 }
 
-func (f fakeStage) Descriptor() pipeline.StageDescriptor { return f.desc }
+func (f fakeSegment) Descriptor() pipeline.SegmentDescriptor { return f.desc }
 
-func (f fakeStage) Process(
+func (f fakeSegment) Process(
 	_ context.Context,
 	in pipeline.Envelope[string],
-	emit func(pipeline.Envelope[string]) error,
+	out func(pipeline.Envelope[string]) error,
 ) error {
-	return emit(in)
+	return out(in)
 }
 
-func (f fakeStage) Flush(context.Context) error             { return nil }
-func (f fakeStage) Snapshot(context.Context) ([]byte, error) { return []byte("ok"), nil }
-func (f fakeStage) Restore(context.Context, []byte) error    { return nil }
-func (f fakeStage) Compensator() pipeline.Compensator        { return f.compensator }
+func (f fakeSegment) Flush(context.Context) error              { return nil }
+func (f fakeSegment) Done(context.Context) error               { return nil }
+func (f fakeSegment) Snapshot(context.Context) ([]byte, error) { return []byte("ok"), nil }
+func (f fakeSegment) Restore(context.Context, []byte) error    { return nil }
+func (f fakeSegment) Compensator() pipeline.Compensator        { return f.compensator }
 
 type fakeAckGraphStore struct {
-	acks map[pipeline.StageID]map[pipeline.RecordID]pipeline.StageAck
+	acks map[pipeline.SegmentID]map[pipeline.RecordID]pipeline.SegmentAck
 }
 
 var _ pipeline.AckGraphStore = (*fakeAckGraphStore)(nil)
 
 func newFakeAckGraphStore() *fakeAckGraphStore {
 	return &fakeAckGraphStore{
-		acks: map[pipeline.StageID]map[pipeline.RecordID]pipeline.StageAck{},
+		acks: map[pipeline.SegmentID]map[pipeline.RecordID]pipeline.SegmentAck{},
 	}
 }
 
-func (s *fakeAckGraphStore) CommitAck(_ context.Context, ack pipeline.StageAck) error {
-	if _, ok := s.acks[ack.Stage]; !ok {
-		s.acks[ack.Stage] = map[pipeline.RecordID]pipeline.StageAck{}
+func (s *fakeAckGraphStore) CommitAck(_ context.Context, ack pipeline.SegmentAck) error {
+	if _, ok := s.acks[ack.Segment]; !ok {
+		s.acks[ack.Segment] = map[pipeline.RecordID]pipeline.SegmentAck{}
 	}
-	s.acks[ack.Stage][ack.RecordID] = ack
+	s.acks[ack.Segment][ack.RecordID] = ack
 	return nil
 }
 
@@ -88,14 +103,14 @@ func (s *fakeAckGraphStore) LinkParentChild(context.Context, pipeline.RecordID, 
 
 func (s *fakeAckGraphStore) GetAck(
 	_ context.Context,
-	stage pipeline.StageID,
+	segment pipeline.SegmentID,
 	record pipeline.RecordID,
-) (pipeline.StageAck, bool, error) {
-	perStage, ok := s.acks[stage]
+) (pipeline.SegmentAck, bool, error) {
+	perSegment, ok := s.acks[segment]
 	if !ok {
-		return pipeline.StageAck{}, false, nil
+		return pipeline.SegmentAck{}, false, nil
 	}
-	ack, ok := perStage[record]
+	ack, ok := perSegment[record]
 	return ack, ok, nil
 }
 
@@ -107,23 +122,23 @@ func (s *fakeAckGraphStore) Parents(context.Context, pipeline.RecordID) ([]pipel
 	return nil, nil
 }
 
-func (s *fakeAckGraphStore) PendingByStage(context.Context, pipeline.StageID) ([]pipeline.RecordID, error) {
+func (s *fakeAckGraphStore) PendingBySegment(context.Context, pipeline.SegmentID) ([]pipeline.RecordID, error) {
 	return nil, nil
 }
 
-func TestValidateStageContract(t *testing.T) {
+func TestValidateSegmentContract(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		stage   fakeStage
+		segment fakeSegment
 		wantErr error
 	}{
 		{
-			name: "idempotent stage without compensator is allowed",
-			stage: fakeStage{
-				desc: pipeline.StageDescriptor{
-					ID:          "stage-A",
+			name: "idempotent segment without compensator is allowed",
+			segment: fakeSegment{
+				desc: pipeline.SegmentDescriptor{
+					ID:          "segment-A",
 					Idempotency: pipeline.Idempotent,
 					Version:     "v1",
 				},
@@ -131,10 +146,10 @@ func TestValidateStageContract(t *testing.T) {
 			wantErr: nil,
 		},
 		{
-			name: "non-idempotent stage must provide compensator",
-			stage: fakeStage{
-				desc: pipeline.StageDescriptor{
-					ID:          "stage-B",
+			name: "non-idempotent segment must provide compensator",
+			segment: fakeSegment{
+				desc: pipeline.SegmentDescriptor{
+					ID:          "segment-B",
 					Idempotency: pipeline.NonIdempotent,
 					Version:     "v1",
 				},
@@ -143,10 +158,10 @@ func TestValidateStageContract(t *testing.T) {
 			wantErr: pipeline.ErrCompensatorRequired,
 		},
 		{
-			name: "non-idempotent stage with compensator is allowed",
-			stage: fakeStage{
-				desc: pipeline.StageDescriptor{
-					ID:          "stage-C",
+			name: "non-idempotent segment with compensator is allowed",
+			segment: fakeSegment{
+				desc: pipeline.SegmentDescriptor{
+					ID:          "segment-C",
 					Idempotency: pipeline.NonIdempotent,
 					Version:     "v1",
 				},
@@ -155,15 +170,15 @@ func TestValidateStageContract(t *testing.T) {
 			wantErr: nil,
 		},
 		{
-			name: "stage ID is required",
-			stage: fakeStage{
-				desc: pipeline.StageDescriptor{
+			name: "segment ID is required",
+			segment: fakeSegment{
+				desc: pipeline.SegmentDescriptor{
 					ID:          "",
 					Idempotency: pipeline.Idempotent,
 					Version:     "v1",
 				},
 			},
-			wantErr: pipeline.ErrStageIDRequired,
+			wantErr: pipeline.ErrSegmentIDRequired,
 		},
 	}
 
@@ -171,7 +186,7 @@ func TestValidateStageContract(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := pipeline.ValidateStage[string, string](tc.stage)
+			err := pipeline.ValidateSegment[string, string](tc.segment)
 
 			if tc.wantErr == nil && err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -187,25 +202,25 @@ func TestEnvelopeTraceabilityFanOutShape(t *testing.T) {
 	t.Parallel()
 
 	root := pipeline.Envelope[string]{
-		RecordID:  "src-1",
-		AttemptID: 1,
-		StagePath: []pipeline.StageID{"source"},
-		Payload:   "input",
+		RecordID:    "src-1",
+		AttemptID:   1,
+		SegmentPath: []pipeline.SegmentID{"source"},
+		Payload:     "input",
 	}
 
 	childA := pipeline.Envelope[string]{
-		RecordID:  "child-A",
-		AttemptID: root.AttemptID,
-		ParentIDs: []pipeline.RecordID{root.RecordID},
-		StagePath: []pipeline.StageID{"source", "splitter"},
-		Payload:   "left",
+		RecordID:    "child-A",
+		AttemptID:   root.AttemptID,
+		ParentIDs:   []pipeline.RecordID{root.RecordID},
+		SegmentPath: []pipeline.SegmentID{"source", "splitter"},
+		Payload:     "left",
 	}
 	childB := pipeline.Envelope[string]{
-		RecordID:  "child-B",
-		AttemptID: root.AttemptID,
-		ParentIDs: []pipeline.RecordID{root.RecordID},
-		StagePath: []pipeline.StageID{"source", "splitter"},
-		Payload:   "right",
+		RecordID:    "child-B",
+		AttemptID:   root.AttemptID,
+		ParentIDs:   []pipeline.RecordID{root.RecordID},
+		SegmentPath: []pipeline.SegmentID{"source", "splitter"},
+		Payload:     "right",
 	}
 
 	if len(childA.ParentIDs) != 1 || childA.ParentIDs[0] != root.RecordID {
@@ -216,13 +231,13 @@ func TestEnvelopeTraceabilityFanOutShape(t *testing.T) {
 	}
 }
 
-func TestProducerPullContractShape(t *testing.T) {
+func TestSourcePullContractShape(t *testing.T) {
 	t.Parallel()
 
-	p := &fakeProducer{
-		items: []pipeline.Envelope[string]{
-			{RecordID: "r1", AttemptID: 1, Payload: "one"},
-			{RecordID: "r2", AttemptID: 1, Payload: "two"},
+	p := &fakeSource{
+		items: []pipeline.SourceRecord[string]{
+			{RecordID: "r1", Payload: "one"},
+			{RecordID: "r2", Payload: "two"},
 		},
 	}
 
@@ -230,7 +245,7 @@ func TestProducerPullContractShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error on first item: %v", err)
 	}
-	if !ok || item.RecordID != "r1" {
+	if !ok || item.RecordID != "r1" || item.Payload != "one" {
 		t.Fatalf("unexpected first item: ok=%v item=%+v", ok, item)
 	}
 
@@ -251,17 +266,17 @@ func TestProducerPullContractShape(t *testing.T) {
 	}
 }
 
-func TestConsumerWithDoneLifecycleShape(t *testing.T) {
+func TestSinkWithDoneLifecycleShape(t *testing.T) {
 	t.Parallel()
 
-	c := &fakeConsumer{}
+	c := &fakeSink{}
 	in := pipeline.Envelope[string]{RecordID: "r1", AttemptID: 1, Payload: "payload"}
 
 	if err := c.Consume(context.Background(), in); err != nil {
 		t.Fatalf("unexpected consume error: %v", err)
 	}
 	if len(c.received) != 1 || c.received[0].RecordID != "r1" {
-		t.Fatalf("consumer did not capture expected envelope")
+		t.Fatalf("sink did not capture expected envelope")
 	}
 
 	if err := c.Done(context.Background()); err != nil {
@@ -276,8 +291,8 @@ func TestAckGraphStoreContractShape(t *testing.T) {
 	t.Parallel()
 
 	store := newFakeAckGraphStore()
-	ack := pipeline.StageAck{
-		Stage:    "stage-a",
+	ack := pipeline.SegmentAck{
+		Segment:  "segment-a",
 		RecordID: "rec-1",
 		Attempt:  1,
 		Status:   pipeline.AckCommitted,
@@ -287,7 +302,7 @@ func TestAckGraphStoreContractShape(t *testing.T) {
 		t.Fatalf("commit ack failed: %v", err)
 	}
 
-	got, ok, err := store.GetAck(context.Background(), "stage-a", "rec-1")
+	got, ok, err := store.GetAck(context.Background(), "segment-a", "rec-1")
 	if err != nil {
 		t.Fatalf("get ack failed: %v", err)
 	}
@@ -297,4 +312,194 @@ func TestAckGraphStoreContractShape(t *testing.T) {
 	if got.Status != pipeline.AckCommitted {
 		t.Fatalf("unexpected ack status: %v", got.Status)
 	}
+}
+
+func TestApplyCouplingContractShape(t *testing.T) {
+	t.Parallel()
+
+	t.Run("successfully transforms valid json", func(t *testing.T) {
+		t.Parallel()
+
+		c := fakeCoupling{out: json.RawMessage(`{"to":"segment"}`)}
+		got, err := pipeline.ApplyCoupling(c, json.RawMessage(`{"from":"segment"}`))
+		if err != nil {
+			t.Fatalf("unexpected apply coupling error: %v", err)
+		}
+		if string(got) != `{"to":"segment"}` {
+			t.Fatalf("unexpected transformed json: %s", string(got))
+		}
+	})
+
+	t.Run("rejects nil coupling", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := pipeline.ApplyCoupling(nil, json.RawMessage(`{"from":"segment"}`))
+		if !errors.Is(err, pipeline.ErrCouplingNil) {
+			t.Fatalf("expected ErrCouplingNil, got %v", err)
+		}
+	})
+
+	t.Run("rejects invalid input json", func(t *testing.T) {
+		t.Parallel()
+
+		c := fakeCoupling{out: json.RawMessage(`{"ok":true}`)}
+		_, err := pipeline.ApplyCoupling(c, json.RawMessage(`{"broken"`))
+		if !errors.Is(err, pipeline.ErrCouplingInputInvalidJSON) {
+			t.Fatalf("expected ErrCouplingInputInvalidJSON, got %v", err)
+		}
+	})
+
+	t.Run("rejects invalid output json", func(t *testing.T) {
+		t.Parallel()
+
+		c := fakeCoupling{out: json.RawMessage(`{"broken"`)}
+		_, err := pipeline.ApplyCoupling(c, json.RawMessage(`{"from":"segment"}`))
+		if !errors.Is(err, pipeline.ErrCouplingOutputInvalidJSON) {
+			t.Fatalf("expected ErrCouplingOutputInvalidJSON, got %v", err)
+		}
+	})
+}
+
+func TestValidateTopologyContractShape(t *testing.T) {
+	t.Parallel()
+
+	baseSegments := []pipeline.SegmentDescriptor{
+		{ID: "segment-source", Idempotency: pipeline.Idempotent, Version: "v1"},
+		{ID: "segment-transform", Idempotency: pipeline.Idempotent, Version: "v1"},
+		{ID: "segment-sink", Idempotency: pipeline.Idempotent, Version: "v1"},
+	}
+	baseCouplings := []pipeline.CouplingDescriptor{
+		{ID: "c-source-transform", FromSegment: "segment-source", ToSegment: "segment-transform"},
+		{ID: "c-transform-sink", FromSegment: "segment-transform", ToSegment: "segment-sink"},
+	}
+
+	t.Run("accepts valid linear topology", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := pipeline.EngineConfig{
+			Segments:  baseSegments,
+			Couplings: baseCouplings,
+			Topology: pipeline.Topology{
+				Connections: []pipeline.Connection{
+					{From: "segment-source", To: "segment-transform", CouplingID: "c-source-transform"},
+					{From: "segment-transform", To: "segment-sink", CouplingID: "c-transform-sink"},
+				},
+			},
+		}
+
+		if err := pipeline.ValidateTopology(cfg); err != nil {
+			t.Fatalf("unexpected topology validation error: %v", err)
+		}
+	})
+
+	t.Run("rejects unknown segment", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := pipeline.EngineConfig{
+			Segments:  baseSegments,
+			Couplings: baseCouplings,
+			Topology: pipeline.Topology{
+				Connections: []pipeline.Connection{
+					{From: "segment-source", To: "segment-missing", CouplingID: "c-source-transform"},
+				},
+			},
+		}
+
+		err := pipeline.ValidateTopology(cfg)
+		if !errors.Is(err, pipeline.ErrTopologyUnknownSegment) {
+			t.Fatalf("expected ErrTopologyUnknownSegment, got %v", err)
+		}
+	})
+
+	t.Run("rejects unknown coupling", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := pipeline.EngineConfig{
+			Segments:  baseSegments,
+			Couplings: baseCouplings,
+			Topology: pipeline.Topology{
+				Connections: []pipeline.Connection{
+					{From: "segment-source", To: "segment-transform", CouplingID: "c-missing"},
+				},
+			},
+		}
+
+		err := pipeline.ValidateTopology(cfg)
+		if !errors.Is(err, pipeline.ErrTopologyUnknownCoupling) {
+			t.Fatalf("expected ErrTopologyUnknownCoupling, got %v", err)
+		}
+	})
+
+	t.Run("rejects coupling segment mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := pipeline.EngineConfig{
+			Segments:  baseSegments,
+			Couplings: baseCouplings,
+			Topology: pipeline.Topology{
+				Connections: []pipeline.Connection{
+					{From: "segment-source", To: "segment-sink", CouplingID: "c-source-transform"},
+				},
+			},
+		}
+
+		err := pipeline.ValidateTopology(cfg)
+		if !errors.Is(err, pipeline.ErrTopologyCouplingSegmentMismatch) {
+			t.Fatalf("expected ErrTopologyCouplingSegmentMismatch, got %v", err)
+		}
+	})
+
+	t.Run("rejects ambiguous ordering when disallowed", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := pipeline.EngineConfig{
+			Segments: []pipeline.SegmentDescriptor{
+				{ID: "segment-source", Idempotency: pipeline.Idempotent, Version: "v1"},
+				{ID: "segment-a", Idempotency: pipeline.Idempotent, Version: "v1"},
+				{ID: "segment-b", Idempotency: pipeline.Idempotent, Version: "v1"},
+			},
+			Couplings: []pipeline.CouplingDescriptor{
+				{ID: "c-source-a"},
+				{ID: "c-source-b"},
+			},
+			Topology: pipeline.Topology{
+				AllowAmbiguousOrder: false,
+				Connections: []pipeline.Connection{
+					{From: "segment-source", To: "segment-a", CouplingID: "c-source-a"},
+					{From: "segment-source", To: "segment-b", CouplingID: "c-source-b"},
+				},
+			},
+		}
+
+		err := pipeline.ValidateTopology(cfg)
+		if !errors.Is(err, pipeline.ErrTopologyAmbiguousOrder) {
+			t.Fatalf("expected ErrTopologyAmbiguousOrder, got %v", err)
+		}
+	})
+
+	t.Run("rejects cyclic topology", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := pipeline.EngineConfig{
+			Segments: []pipeline.SegmentDescriptor{
+				{ID: "segment-a", Idempotency: pipeline.Idempotent, Version: "v1"},
+				{ID: "segment-b", Idempotency: pipeline.Idempotent, Version: "v1"},
+			},
+			Couplings: []pipeline.CouplingDescriptor{
+				{ID: "c-a-b"},
+				{ID: "c-b-a"},
+			},
+			Topology: pipeline.Topology{
+				Connections: []pipeline.Connection{
+					{From: "segment-a", To: "segment-b", CouplingID: "c-a-b"},
+					{From: "segment-b", To: "segment-a", CouplingID: "c-b-a"},
+				},
+			},
+		}
+
+		err := pipeline.ValidateTopology(cfg)
+		if !errors.Is(err, pipeline.ErrTopologyCycle) {
+			t.Fatalf("expected ErrTopologyCycle, got %v", err)
+		}
+	})
 }

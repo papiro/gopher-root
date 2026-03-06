@@ -1,0 +1,13 @@
+---
+description: Keep pipeline user example as canonical path
+alwaysApply: true
+---
+
+# Pipeline Golden Example
+
+- Treat `pipeline/golden_example_test.go` as the canonical user example for end users.
+- This example is intended to be front-and-center README material and should optimize for clarity and ease of adoption.
+- Keep the shape explicit and simple: true `Source` origin (no upstream input), two segments, coupling, and sink.
+- Prefer the most basic clear naming (`source`, `segment1`, `segment2`, `sink`) over internal implementation terminology.
+- When API design decisions are considered, prioritize this example's ergonomics and readability.
+- Avoid reintroducing patterns that imply users must manually seed the first segment input when demonstrating the easiest path.

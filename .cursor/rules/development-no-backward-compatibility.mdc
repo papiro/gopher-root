@@ -1,0 +1,12 @@
+---
+description: Development mode without backward compatibility
+alwaysApply: true
+---
+
+# Development Mode: No Backward Compatibility
+
+- Treat this repository as active development, not a stable release surface.
+- Do not preserve backward compatibility when improving naming, APIs, contracts, or structure.
+- Prefer clean replacements over compatibility shims, aliases, adapters, or deprecation bridges.
+- When a better design requires breaking changes, apply the break directly and update usages/tests.
+- Optimize for clarity and forward progress rather than migration support.
