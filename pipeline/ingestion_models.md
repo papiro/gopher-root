@@ -20,12 +20,11 @@ for {
     record, ok, err := source.Next(ctx)
     if err != nil { return err }
     if !ok { break } // end-of-stream
-    // engine assigns attempt/lineage metadata before processing
-    in := Envelope[T]{
-        RecordID:  record.RecordID,
-        AttemptID: 1, // engine-managed
-        Payload:   record.Payload,
-        Metadata:  record.Metadata,
+    // segments see only the stable source identity plus business payload
+    in := SegmentRecord[T]{
+        RecordID: record.RecordID,
+        Payload:  record.Payload,
+        Metadata: record.Metadata,
     }
     _ = in // process one item
 }
@@ -54,7 +53,7 @@ for {
         return ctx.Err()
     case record, ok := <-source.Stream(ctx):
         if !ok { return nil } // source completed
-        // engine assigns attempt/lineage metadata before processing
+        // engine converts source records into segment input records before processing
         _ = record
     }
 }

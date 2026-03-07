@@ -1,0 +1,45 @@
+package golden_example
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/pierre/gopher-root/pipeline"
+)
+
+type Segment1 struct{}
+
+func (Segment1) Descriptor() pipeline.SegmentDescriptor {
+	return pipeline.SegmentDescriptor{
+		ID:          "segment1",
+		Idempotency: pipeline.Idempotent,
+		Version:     "v1",
+	}
+}
+
+func (Segment1) Process(
+	_ context.Context,
+	in pipeline.SegmentRecord[string],
+	out func(pipeline.SegmentRecord[json.RawMessage]) error,
+) error {
+	payload, err := json.Marshal(struct {
+		Message string `json:"message"`
+	}{
+		Message: in.Payload,
+	})
+	if err != nil {
+		return err
+	}
+
+	return out(pipeline.SegmentRecord[json.RawMessage]{
+		RecordID: in.RecordID,
+		Payload:  payload,
+		Metadata: in.Metadata,
+	})
+}
+
+func (Segment1) Flush(context.Context) error               { return nil }
+func (Segment1) Done(context.Context) error                { return nil }
+func (Segment1) Snapshot(context.Context) ([]byte, error) { return nil, nil }
+func (Segment1) Restore(context.Context, []byte) error    { return nil }
+func (Segment1) Compensator() pipeline.Compensator        { return nil }

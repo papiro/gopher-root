@@ -1,8 +1,10 @@
 package types
 
-// Envelope carries one record plus trace metadata as it flows through the pipeline.
+// Envelope carries one traced record plus engine-owned execution metadata.
 type Envelope[T any] struct {
-	// RecordID is the stable logical identity used for traceability and dedup.
+	// OriginRecordID is the stable source identity propagated end-to-end for correlation.
+	OriginRecordID RecordID
+	// RecordID uniquely identifies this specific lineage node for acks and parent/child links.
 	RecordID RecordID
 	// AttemptID is incremented when a record is retried or replayed.
 	AttemptID AttemptID

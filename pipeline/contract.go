@@ -15,8 +15,9 @@ type (
 	IdempotencyKind = pipelinetypes.IdempotencyKind
 	AckStatus       = pipelinetypes.AckStatus
 
-	Envelope[T any] = pipelinetypes.Envelope[T]
-	SourceRecord[T any] = pipelinetypes.SourceRecord[T]
+	Envelope[T any]      = pipelinetypes.Envelope[T]
+	SegmentRecord[T any] = pipelinetypes.SegmentRecord[T]
+	SourceRecord[T any]  = pipelinetypes.SourceRecord[T]
 
 	SegmentAck         = pipelinetypes.SegmentAck
 	SegmentDescriptor  = pipelinetypes.SegmentDescriptor
@@ -50,7 +51,10 @@ const (
 
 var (
 	ErrCompensatorRequired       = contracts.ErrCompensatorRequired
+	ErrSourceRequired            = contracts.ErrSourceRequired
+	ErrStreamSourceRequired      = contracts.ErrStreamSourceRequired
 	ErrSegmentIDRequired         = contracts.ErrSegmentIDRequired
+	ErrSinkRequired              = contracts.ErrSinkRequired
 	ErrCouplingNil               = contracts.ErrCouplingNil
 	ErrCouplingInputInvalidJSON  = contracts.ErrCouplingInputInvalidJSON
 	ErrCouplingOutputInvalidJSON = contracts.ErrCouplingOutputInvalidJSON
@@ -69,9 +73,24 @@ var (
 	ErrTopologyCycle                      = contracts.ErrTopologyCycle
 )
 
+// ValidateSource performs baseline contract checks independent of engine implementation.
+func ValidateSource[T any](s Source[T]) error {
+	return contracts.ValidateSource(s)
+}
+
+// ValidateStreamSource performs baseline contract checks independent of engine implementation.
+func ValidateStreamSource[T any](s StreamSource[T]) error {
+	return contracts.ValidateStreamSource(s)
+}
+
+// ValidateSink performs baseline contract checks independent of engine implementation.
+func ValidateSink[T any](s Sink[T]) error {
+	return contracts.ValidateSink(s)
+}
+
 // ValidateSegment performs baseline contract checks independent of engine implementation.
 func ValidateSegment[TIn, TOut any](s Segment[TIn, TOut]) error {
-	return contracts.ValidateSegment[TIn, TOut](s)
+	return contracts.ValidateSegment(s)
 }
 
 // ApplyCoupling runs one coupling with baseline JSON-contract checks.

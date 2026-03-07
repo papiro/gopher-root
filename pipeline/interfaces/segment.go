@@ -12,12 +12,12 @@ type Compensator interface {
 	Compensate(ctx context.Context, rec pipelinetypes.RecordID, attempt pipelinetypes.AttemptID, reason error) error
 }
 
-// Segment transforms one input envelope into zero or more output envelopes.
+// Segment transforms one input record into zero or more output records.
 type Segment[TIn, TOut any] interface {
 	// Descriptor returns segment identity and replay policy metadata.
 	Descriptor() pipelinetypes.SegmentDescriptor
 	// Process handles one input and emits zero or more outputs through out callback.
-	Process(ctx context.Context, in pipelinetypes.Envelope[TIn], out func(pipelinetypes.Envelope[TOut]) error) error
+	Process(ctx context.Context, in pipelinetypes.SegmentRecord[TIn], out func(pipelinetypes.SegmentRecord[TOut]) error) error
 	// Flush asks the segment to durably finish partial artifacts at a safe boundary.
 	Flush(ctx context.Context) error
 	// Done allows optional segment-specific finalize work once upstream has finished.

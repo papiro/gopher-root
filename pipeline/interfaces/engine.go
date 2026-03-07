@@ -14,8 +14,8 @@ type Engine[TIn, TOut any] interface {
 	Pause(ctx context.Context) error
 	// Resume continues processing from the next durable recovery boundary.
 	Resume(ctx context.Context) error
-	// Retry replays a specific logical record according to retry and compensation rules.
+	// Retry replays a specific lineage record according to retry and compensation rules.
 	Retry(ctx context.Context, record pipelinetypes.RecordID) error
-	// Trace returns terminal outputs derived from one source record.
+	// Trace returns terminal outputs derived from one source record identity.
 	Trace(ctx context.Context, source pipelinetypes.RecordID) ([]pipelinetypes.Envelope[TOut], error)
 }

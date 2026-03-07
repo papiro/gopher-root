@@ -29,10 +29,32 @@ func (p *fakeSource) Next(_ context.Context) (pipeline.SourceRecord[string], boo
 	return item, true, nil
 }
 
+type nilFakeSource struct{}
+
+func (*nilFakeSource) Next(context.Context) (pipeline.SourceRecord[string], bool, error) {
+	return pipeline.SourceRecord[string]{}, false, nil
+}
+
+type fakeStreamSource struct{}
+
+func (fakeStreamSource) Stream(context.Context) <-chan pipeline.SourceRecord[string] {
+	ch := make(chan pipeline.SourceRecord[string])
+	close(ch)
+	return ch
+}
+
+type nilFakeStreamSource struct{}
+
+func (*nilFakeStreamSource) Stream(context.Context) <-chan pipeline.SourceRecord[string] {
+	return nil
+}
+
 type fakeSink struct {
 	received []pipeline.Envelope[string]
 	doneCall int
 }
+
+type nilFakeSink struct{}
 
 type fakeCoupling struct {
 	out json.RawMessage
@@ -56,6 +78,8 @@ func (c *fakeSink) Done(context.Context) error {
 	return nil
 }
 
+func (*nilFakeSink) Consume(context.Context, pipeline.Envelope[string]) error { return nil }
+
 type fakeSegment struct {
 	desc        pipeline.SegmentDescriptor
 	compensator pipeline.Compensator
@@ -65,8 +89,8 @@ func (f fakeSegment) Descriptor() pipeline.SegmentDescriptor { return f.desc }
 
 func (f fakeSegment) Process(
 	_ context.Context,
-	in pipeline.Envelope[string],
-	out func(pipeline.Envelope[string]) error,
+	in pipeline.SegmentRecord[string],
+	out func(pipeline.SegmentRecord[string]) error,
 ) error {
 	return out(in)
 }
@@ -198,31 +222,109 @@ func TestValidateSegmentContract(t *testing.T) {
 	}
 }
 
+func TestValidateSourceContract(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil source is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		var source *nilFakeSource
+		err := pipeline.ValidateSource[string](source)
+		if !errors.Is(err, pipeline.ErrSourceRequired) {
+			t.Fatalf("expected error %q, got %v", pipeline.ErrSourceRequired, err)
+		}
+	})
+
+	t.Run("source implementation is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		err := pipeline.ValidateSource[string](&fakeSource{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestValidateStreamSourceContract(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil stream source is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		var source *nilFakeStreamSource
+		err := pipeline.ValidateStreamSource[string](source)
+		if !errors.Is(err, pipeline.ErrStreamSourceRequired) {
+			t.Fatalf("expected error %q, got %v", pipeline.ErrStreamSourceRequired, err)
+		}
+	})
+
+	t.Run("stream source implementation is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		err := pipeline.ValidateStreamSource[string](fakeStreamSource{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestValidateSinkContract(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil sink is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		var sink *nilFakeSink
+		err := pipeline.ValidateSink[string](sink)
+		if !errors.Is(err, pipeline.ErrSinkRequired) {
+			t.Fatalf("expected error %q, got %v", pipeline.ErrSinkRequired, err)
+		}
+	})
+
+	t.Run("sink implementation is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		err := pipeline.ValidateSink[string](&fakeSink{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestEnvelopeTraceabilityFanOutShape(t *testing.T) {
 	t.Parallel()
 
 	root := pipeline.Envelope[string]{
-		RecordID:    "src-1",
+		OriginRecordID: "src-1",
+		RecordID:       "src-1",
 		AttemptID:   1,
 		SegmentPath: []pipeline.SegmentID{"source"},
 		Payload:     "input",
 	}
 
 	childA := pipeline.Envelope[string]{
-		RecordID:    "child-A",
-		AttemptID:   root.AttemptID,
-		ParentIDs:   []pipeline.RecordID{root.RecordID},
-		SegmentPath: []pipeline.SegmentID{"source", "splitter"},
-		Payload:     "left",
+		OriginRecordID: root.OriginRecordID,
+		RecordID:       "child-A",
+		AttemptID:      root.AttemptID,
+		ParentIDs:      []pipeline.RecordID{root.RecordID},
+		SegmentPath:    []pipeline.SegmentID{"source", "splitter"},
+		Payload:        "left",
 	}
 	childB := pipeline.Envelope[string]{
-		RecordID:    "child-B",
-		AttemptID:   root.AttemptID,
-		ParentIDs:   []pipeline.RecordID{root.RecordID},
-		SegmentPath: []pipeline.SegmentID{"source", "splitter"},
-		Payload:     "right",
+		OriginRecordID: root.OriginRecordID,
+		RecordID:       "child-B",
+		AttemptID:      root.AttemptID,
+		ParentIDs:      []pipeline.RecordID{root.RecordID},
+		SegmentPath:    []pipeline.SegmentID{"source", "splitter"},
+		Payload:        "right",
 	}
 
+	if childA.OriginRecordID != root.OriginRecordID {
+		t.Fatalf("childA did not preserve origin record identity")
+	}
+	if childB.OriginRecordID != root.OriginRecordID {
+		t.Fatalf("childB did not preserve origin record identity")
+	}
 	if len(childA.ParentIDs) != 1 || childA.ParentIDs[0] != root.RecordID {
 		t.Fatalf("childA does not correctly link to parent record")
 	}
@@ -270,12 +372,17 @@ func TestSinkWithDoneLifecycleShape(t *testing.T) {
 	t.Parallel()
 
 	c := &fakeSink{}
-	in := pipeline.Envelope[string]{RecordID: "r1", AttemptID: 1, Payload: "payload"}
+	in := pipeline.Envelope[string]{
+		OriginRecordID: "r1",
+		RecordID:       "sink-r1",
+		AttemptID:      1,
+		Payload:        "payload",
+	}
 
 	if err := c.Consume(context.Background(), in); err != nil {
 		t.Fatalf("unexpected consume error: %v", err)
 	}
-	if len(c.received) != 1 || c.received[0].RecordID != "r1" {
+	if len(c.received) != 1 || c.received[0].OriginRecordID != "r1" {
 		t.Fatalf("sink did not capture expected envelope")
 	}
 
