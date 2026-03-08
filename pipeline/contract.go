@@ -36,8 +36,9 @@ type (
 	Acker                  = contracts.Acker
 	Compensator            = contracts.Compensator
 	Coupling               = contracts.Coupling
-	Segment[TIn, TOut any] = contracts.Segment[TIn, TOut]
-	Engine[TIn, TOut any]  = contracts.Engine[TIn, TOut]
+	Segment[TIn, TOut any]             = contracts.Segment[TIn, TOut]
+	CompensatingSegment[TIn, TOut any] = contracts.CompensatingSegment[TIn, TOut]
+	Engine[TIn, TOut any]              = contracts.Engine[TIn, TOut]
 )
 
 const (

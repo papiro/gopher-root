@@ -9,6 +9,8 @@ import (
 	"github.com/pierre/gopher-root/pipeline/golden_example/couplings"
 )
 
+// EnginePush is a temporary manual reference implementation kept while the
+// framework-owned builder runtime expands beyond the initial linear path.
 type EnginePush struct {
 	source   PushSource
 	segment1 Segment1

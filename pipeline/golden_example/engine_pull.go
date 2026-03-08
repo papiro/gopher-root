@@ -8,6 +8,8 @@ import (
 	"github.com/pierre/gopher-root/pipeline/golden_example/couplings"
 )
 
+// EnginePull is a temporary manual reference implementation kept while the
+// framework-owned builder runtime expands beyond the initial linear path.
 type EnginePull struct {
 	source   *Source
 	segment1 Segment1

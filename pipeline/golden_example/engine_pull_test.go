@@ -4,43 +4,44 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/pierre/gopher-root/pipeline"
 	"github.com/pierre/gopher-root/pipeline/golden_example/couplings"
 )
 
 func Example_engine_pull() {
-	// Target end-user shape once the framework owns orchestration:
-	//
-	//	engine := pipeline.NewPullBuilder(&Source{}, &Sink{}).
-	//		Through(Segment1{}).
-	//		Via(couplings.MessageToText{}).
-	//		Through(Segment2{}).
-	//		Build()
-	//
-	// The current example still uses a hand-wired reference engine while the builder API
-	// is being designed and implemented.
-	engine := NewEnginePull(couplings.MessageToText{})
+	source := &Source{}
+	sink := &Sink{}
+	plan, buildErr := pipeline.NewBuilder().
+		Through(Segment1{}).
+		Via(couplings.MessageToText{}).
+		Through(Segment2{}).
+		Build()
+	fmt.Println("build valid:", buildErr == nil)
+	if buildErr != nil {
+		return
+	}
+	engine, engineErr := pipeline.NewPullEngine(source, sink, plan)
+	fmt.Println("engine valid:", engineErr == nil)
+	if engineErr != nil {
+		return
+	}
 
-	validation := engine.Validate()
-	fmt.Println("source contract valid:", validation.Source == nil)
-	fmt.Println("segment1 contract valid:", validation.Segment1 == nil)
-	fmt.Println("segment2 contract valid:", validation.Segment2 == nil)
-	fmt.Println("sink contract valid:", validation.Sink == nil)
-
-	result, runErr := engine.Run(context.Background())
-	fmt.Println("source emitted:", runErr == nil && result.SourceEmitted)
-	fmt.Println("coupling applied:", runErr == nil && result.CouplingApplied)
-	fmt.Println("sink output:", result.SinkOutput)
-	fmt.Println("origin record:", result.OriginRecordID)
-	fmt.Println("segment path:", result.SegmentPath)
-	fmt.Println("source completed:", runErr == nil && result.SourceCompleted)
+	runErr := engine.Run(context.Background())
+	trace, traceErr := engine.Trace(context.Background(), "rec-1")
+	fmt.Println("source emitted:", runErr == nil && len(sink.items) == 1)
+	fmt.Println("trace available:", traceErr == nil && len(trace) == 1)
+	if len(trace) > 0 {
+		fmt.Println("sink output:", trace[0].Payload)
+		fmt.Println("origin record:", trace[0].OriginRecordID)
+		fmt.Println("segment path:", trace[0].SegmentPath)
+	}
+	fmt.Println("source completed:", runErr == nil)
 
 	// Output:
-	// source contract valid: true
-	// segment1 contract valid: true
-	// segment2 contract valid: true
-	// sink contract valid: true
+	// build valid: true
+	// engine valid: true
 	// source emitted: true
-	// coupling applied: true
+	// trace available: true
 	// sink output: hello world
 	// origin record: rec-1
 	// segment path: [segment1 segment2]

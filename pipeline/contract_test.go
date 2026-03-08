@@ -101,6 +101,25 @@ func (f fakeSegment) Snapshot(context.Context) ([]byte, error) { return []byte("
 func (f fakeSegment) Restore(context.Context, []byte) error    { return nil }
 func (f fakeSegment) Compensator() pipeline.Compensator        { return f.compensator }
 
+type fakeSegmentNoCompensator struct {
+	desc pipeline.SegmentDescriptor
+}
+
+func (f fakeSegmentNoCompensator) Descriptor() pipeline.SegmentDescriptor { return f.desc }
+
+func (f fakeSegmentNoCompensator) Process(
+	_ context.Context,
+	in pipeline.SegmentRecord[string],
+	out func(pipeline.SegmentRecord[string]) error,
+) error {
+	return out(in)
+}
+
+func (f fakeSegmentNoCompensator) Flush(context.Context) error              { return nil }
+func (f fakeSegmentNoCompensator) Done(context.Context) error               { return nil }
+func (f fakeSegmentNoCompensator) Snapshot(context.Context) ([]byte, error) { return []byte("ok"), nil }
+func (f fakeSegmentNoCompensator) Restore(context.Context, []byte) error    { return nil }
+
 type fakeAckGraphStore struct {
 	acks map[pipeline.SegmentID]map[pipeline.RecordID]pipeline.SegmentAck
 }
@@ -155,12 +174,12 @@ func TestValidateSegmentContract(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		segment fakeSegment
+		segment pipeline.Segment[string, string]
 		wantErr error
 	}{
 		{
-			name: "idempotent segment without compensator is allowed",
-			segment: fakeSegment{
+			name: "idempotent segment without compensator method is allowed",
+			segment: fakeSegmentNoCompensator{
 				desc: pipeline.SegmentDescriptor{
 					ID:          "segment-A",
 					Idempotency: pipeline.Idempotent,
@@ -178,6 +197,17 @@ func TestValidateSegmentContract(t *testing.T) {
 					Version:     "v1",
 				},
 				compensator: nil,
+			},
+			wantErr: pipeline.ErrCompensatorRequired,
+		},
+		{
+			name: "non-idempotent segment without compensator method is rejected",
+			segment: fakeSegmentNoCompensator{
+				desc: pipeline.SegmentDescriptor{
+					ID:          "segment-B2",
+					Idempotency: pipeline.NonIdempotent,
+					Version:     "v1",
+				},
 			},
 			wantErr: pipeline.ErrCompensatorRequired,
 		},

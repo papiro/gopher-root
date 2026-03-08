@@ -16,7 +16,7 @@ type Compensator interface {
 type Segment[TIn, TOut any] interface {
 	// Descriptor returns segment identity and replay policy metadata.
 	Descriptor() pipelinetypes.SegmentDescriptor
-	// Process handles one input and emits zero or more outputs through out callback.
+	// Process handles one input and emits zero or more outputs through "out" callback.
 	Process(ctx context.Context, in pipelinetypes.SegmentRecord[TIn], out func(pipelinetypes.SegmentRecord[TOut]) error) error
 	// Flush asks the segment to durably finish partial artifacts at a safe boundary.
 	Flush(ctx context.Context) error
@@ -26,6 +26,11 @@ type Segment[TIn, TOut any] interface {
 	Snapshot(ctx context.Context) ([]byte, error)
 	// Restore loads segment-owned resumable state.
 	Restore(ctx context.Context, snapshot []byte) error
+}
+
+// CompensatingSegment adds rollback support for segments with non-idempotent side effects.
+type CompensatingSegment[TIn, TOut any] interface {
+	Segment[TIn, TOut]
 	// Compensator returns segment compensation logic and must be non-nil for non-idempotent segments.
 	Compensator() Compensator
 }

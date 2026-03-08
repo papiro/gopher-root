@@ -55,8 +55,11 @@ func ValidateSegment[TIn, TOut any](s Segment[TIn, TOut]) error {
 		return ErrSegmentIDRequired
 	}
 	// Require compensator when replaying the segment can duplicate side effects.
-	if desc.Idempotency == pipelinetypes.NonIdempotent && s.Compensator() == nil {
-		return ErrCompensatorRequired
+	if desc.Idempotency == pipelinetypes.NonIdempotent {
+		compensating, ok := any(s).(CompensatingSegment[TIn, TOut])
+		if !ok || compensating.Compensator() == nil {
+			return ErrCompensatorRequired
+		}
 	}
 	// Return success when baseline contract guarantees are satisfied.
 	return nil

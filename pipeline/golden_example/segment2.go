@@ -36,4 +36,3 @@ func (Segment2) Flush(context.Context) error               { return nil }
 func (Segment2) Done(context.Context) error                { return nil }
 func (Segment2) Snapshot(context.Context) ([]byte, error) { return nil, nil }
 func (Segment2) Restore(context.Context, []byte) error    { return nil }
-func (Segment2) Compensator() pipeline.Compensator        { return nil }
