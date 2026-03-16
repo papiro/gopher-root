@@ -21,18 +21,19 @@ func (Segment2) Descriptor() pipeline.SegmentDescriptor {
 }
 
 func (Segment2) Process(
-	_ context.Context,
+	_ pipeline.ProcessContext,
 	in pipeline.SegmentRecord[Segment2Input],
 	out func(pipeline.SegmentRecord[string]) error,
-) error {
-	return out(pipeline.SegmentRecord[string]{
+) (pipeline.ProcessResult, error) {
+	if err := out(pipeline.SegmentRecord[string]{
 		RecordID: in.RecordID,
 		Payload:  in.Payload.Text,
 		Metadata: in.Metadata,
-	})
+	}); err != nil {
+		return pipeline.ProcessResult{}, err
+	}
+	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
 }
 
-func (Segment2) Flush(context.Context) error               { return nil }
-func (Segment2) Done(context.Context) error                { return nil }
-func (Segment2) Snapshot(context.Context) ([]byte, error) { return nil, nil }
-func (Segment2) Restore(context.Context, []byte) error    { return nil }
+func (Segment2) Restore(context.Context, []byte) error { return nil }
+func (Segment2) Done(context.Context) error            { return nil }

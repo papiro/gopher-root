@@ -18,9 +18,10 @@ func TestEngineSpec_PausePersistsAndResumeContinues(t *testing.T) {
 	_ = eng.Resume(context.Background())
 
 	// Expected behavior:
-	// 1) Pause requests all segments to Flush + Snapshot.
-	// 2) Acks up to the pause boundary are durable.
-	// 3) Resume continues from next uncommitted record, preserving ordering guarantees.
+	// 1) Pause requests the next resumable boundary.
+	// 2) The runtime persists source position, in-flight frontier state, and optional segment snapshots.
+	// 3) Acks up to the pause boundary are durable.
+	// 4) Resume restores frontier state and continues without reprocessing already committed work.
 }
 
 func TestEngineSpec_RetryUsesCompensationForNonIdempotentSegment(t *testing.T) {

@@ -117,6 +117,9 @@ func isNilReflectValue(v reflect.Value) bool {
 }
 
 var (
-	contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
-	errorType   = reflect.TypeOf((*error)(nil)).Elem()
+	contextType        = reflect.TypeOf((*context.Context)(nil)).Elem()
+	processContextType = reflect.TypeOf((*ProcessContext)(nil)).Elem()
+	errorType          = reflect.TypeOf((*error)(nil)).Elem()
+	bytesType          = reflect.TypeOf([]byte(nil))
+	processResultType  = reflect.TypeOf(ProcessResult{})
 )

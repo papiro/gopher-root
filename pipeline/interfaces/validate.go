@@ -19,6 +19,9 @@ var ErrStreamSourceRequired = errors.New("stream source is required")
 // ErrSinkRequired indicates a sink implementation was not provided.
 var ErrSinkRequired = errors.New("sink is required")
 
+// ErrRuntimeRequired indicates a runtime implementation was not provided.
+var ErrRuntimeRequired = errors.New("runtime is required")
+
 // ErrSegmentIDRequired indicates a segment descriptor omitted required segment identity.
 var ErrSegmentIDRequired = errors.New("segment ID is required")
 
@@ -42,6 +45,14 @@ func ValidateStreamSource[T any](s StreamSource[T]) error {
 func ValidateSink[T any](s Sink[T]) error {
 	if isNilContract(s) {
 		return ErrSinkRequired
+	}
+	return nil
+}
+
+// ValidateRuntime performs baseline contract checks independent of engine implementation.
+func ValidateRuntime(r Runtime) error {
+	if isNilContract(r) {
+		return ErrRuntimeRequired
 	}
 	return nil
 }

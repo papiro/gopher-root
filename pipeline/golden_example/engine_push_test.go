@@ -11,6 +11,7 @@ import (
 func Example_engine_push() {
 	source := PushSource{}
 	sink := &Sink{}
+	runtime := pipeline.NewInMemoryRuntime()
 	plan, buildErr := pipeline.NewBuilder().
 		Through(Segment1{}).
 		Via(couplings.MessageToText{}).
@@ -20,7 +21,7 @@ func Example_engine_push() {
 	if buildErr != nil {
 		return
 	}
-	engine, engineErr := pipeline.NewPushEngine(source, sink, plan)
+	engine, engineErr := pipeline.NewPushEngine(source, sink, plan, runtime)
 	fmt.Println("engine valid:", engineErr == nil)
 	if engineErr != nil {
 		return

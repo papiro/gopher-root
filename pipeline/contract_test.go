@@ -29,11 +29,38 @@ func (p *fakeSource) Next(_ context.Context) (pipeline.SourceRecord[string], boo
 	return item, true, nil
 }
 
+func (p *fakeSource) SnapshotCursor(context.Context) ([]byte, error) {
+	return json.Marshal(struct {
+		Index int `json:"index"`
+	}{
+		Index: p.idx,
+	})
+}
+
+func (p *fakeSource) RestoreCursor(_ context.Context, cursor []byte) error {
+	if len(cursor) == 0 {
+		p.idx = 0
+		return nil
+	}
+
+	var state struct {
+		Index int `json:"index"`
+	}
+	if err := json.Unmarshal(cursor, &state); err != nil {
+		return err
+	}
+	p.idx = state.Index
+	return nil
+}
+
 type nilFakeSource struct{}
 
 func (*nilFakeSource) Next(context.Context) (pipeline.SourceRecord[string], bool, error) {
 	return pipeline.SourceRecord[string]{}, false, nil
 }
+
+func (*nilFakeSource) SnapshotCursor(context.Context) ([]byte, error) { return nil, nil }
+func (*nilFakeSource) RestoreCursor(context.Context, []byte) error    { return nil }
 
 type fakeStreamSource struct{}
 
@@ -88,18 +115,19 @@ type fakeSegment struct {
 func (f fakeSegment) Descriptor() pipeline.SegmentDescriptor { return f.desc }
 
 func (f fakeSegment) Process(
-	_ context.Context,
+	_ pipeline.ProcessContext,
 	in pipeline.SegmentRecord[string],
 	out func(pipeline.SegmentRecord[string]) error,
-) error {
-	return out(in)
+) (pipeline.ProcessResult, error) {
+	if err := out(in); err != nil {
+		return pipeline.ProcessResult{}, err
+	}
+	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
 }
 
-func (f fakeSegment) Flush(context.Context) error              { return nil }
-func (f fakeSegment) Done(context.Context) error               { return nil }
-func (f fakeSegment) Snapshot(context.Context) ([]byte, error) { return []byte("ok"), nil }
-func (f fakeSegment) Restore(context.Context, []byte) error    { return nil }
-func (f fakeSegment) Compensator() pipeline.Compensator        { return f.compensator }
+func (f fakeSegment) Restore(context.Context, []byte) error { return nil }
+func (f fakeSegment) Done(context.Context) error            { return nil }
+func (f fakeSegment) Compensator() pipeline.Compensator     { return f.compensator }
 
 type fakeSegmentNoCompensator struct {
 	desc pipeline.SegmentDescriptor
@@ -108,66 +136,18 @@ type fakeSegmentNoCompensator struct {
 func (f fakeSegmentNoCompensator) Descriptor() pipeline.SegmentDescriptor { return f.desc }
 
 func (f fakeSegmentNoCompensator) Process(
-	_ context.Context,
+	_ pipeline.ProcessContext,
 	in pipeline.SegmentRecord[string],
 	out func(pipeline.SegmentRecord[string]) error,
-) error {
-	return out(in)
-}
-
-func (f fakeSegmentNoCompensator) Flush(context.Context) error              { return nil }
-func (f fakeSegmentNoCompensator) Done(context.Context) error               { return nil }
-func (f fakeSegmentNoCompensator) Snapshot(context.Context) ([]byte, error) { return []byte("ok"), nil }
-func (f fakeSegmentNoCompensator) Restore(context.Context, []byte) error    { return nil }
-
-type fakeAckGraphStore struct {
-	acks map[pipeline.SegmentID]map[pipeline.RecordID]pipeline.SegmentAck
-}
-
-var _ pipeline.AckGraphStore = (*fakeAckGraphStore)(nil)
-
-func newFakeAckGraphStore() *fakeAckGraphStore {
-	return &fakeAckGraphStore{
-		acks: map[pipeline.SegmentID]map[pipeline.RecordID]pipeline.SegmentAck{},
+) (pipeline.ProcessResult, error) {
+	if err := out(in); err != nil {
+		return pipeline.ProcessResult{}, err
 	}
+	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
 }
 
-func (s *fakeAckGraphStore) CommitAck(_ context.Context, ack pipeline.SegmentAck) error {
-	if _, ok := s.acks[ack.Segment]; !ok {
-		s.acks[ack.Segment] = map[pipeline.RecordID]pipeline.SegmentAck{}
-	}
-	s.acks[ack.Segment][ack.RecordID] = ack
-	return nil
-}
-
-func (s *fakeAckGraphStore) LinkParentChild(context.Context, pipeline.RecordID, pipeline.RecordID) error {
-	return nil
-}
-
-func (s *fakeAckGraphStore) GetAck(
-	_ context.Context,
-	segment pipeline.SegmentID,
-	record pipeline.RecordID,
-) (pipeline.SegmentAck, bool, error) {
-	perSegment, ok := s.acks[segment]
-	if !ok {
-		return pipeline.SegmentAck{}, false, nil
-	}
-	ack, ok := perSegment[record]
-	return ack, ok, nil
-}
-
-func (s *fakeAckGraphStore) Children(context.Context, pipeline.RecordID) ([]pipeline.RecordID, error) {
-	return nil, nil
-}
-
-func (s *fakeAckGraphStore) Parents(context.Context, pipeline.RecordID) ([]pipeline.RecordID, error) {
-	return nil, nil
-}
-
-func (s *fakeAckGraphStore) PendingBySegment(context.Context, pipeline.SegmentID) ([]pipeline.RecordID, error) {
-	return nil, nil
-}
+func (f fakeSegmentNoCompensator) Restore(context.Context, []byte) error { return nil }
+func (f fakeSegmentNoCompensator) Done(context.Context) error            { return nil }
 
 func TestValidateSegmentContract(t *testing.T) {
 	t.Parallel()
@@ -321,15 +301,38 @@ func TestValidateSinkContract(t *testing.T) {
 	})
 }
 
+func TestValidateRuntimeContract(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil runtime is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		var runtime pipeline.Runtime
+		err := pipeline.ValidateRuntime(runtime)
+		if !errors.Is(err, pipeline.ErrRuntimeRequired) {
+			t.Fatalf("expected error %q, got %v", pipeline.ErrRuntimeRequired, err)
+		}
+	})
+
+	t.Run("runtime implementation is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		err := pipeline.ValidateRuntime(pipeline.NewInMemoryRuntime())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestEnvelopeTraceabilityFanOutShape(t *testing.T) {
 	t.Parallel()
 
 	root := pipeline.Envelope[string]{
 		OriginRecordID: "src-1",
 		RecordID:       "src-1",
-		AttemptID:   1,
-		SegmentPath: []pipeline.SegmentID{"source"},
-		Payload:     "input",
+		AttemptID:      1,
+		SegmentPath:    []pipeline.SegmentID{"source"},
+		Payload:        "input",
 	}
 
 	childA := pipeline.Envelope[string]{
@@ -396,6 +399,18 @@ func TestSourcePullContractShape(t *testing.T) {
 	if ok {
 		t.Fatalf("expected end-of-stream signal")
 	}
+
+	cursor, err := p.SnapshotCursor(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected snapshot cursor error: %v", err)
+	}
+	p.idx = 0
+	if err := p.RestoreCursor(context.Background(), cursor); err != nil {
+		t.Fatalf("unexpected restore cursor error: %v", err)
+	}
+	if p.idx != len(p.items) {
+		t.Fatalf("expected restore cursor to restore source position, got %d", p.idx)
+	}
 }
 
 func TestSinkWithDoneLifecycleShape(t *testing.T) {
@@ -424,22 +439,59 @@ func TestSinkWithDoneLifecycleShape(t *testing.T) {
 	}
 }
 
-func TestAckGraphStoreContractShape(t *testing.T) {
+func TestRuntimeContractShape(t *testing.T) {
 	t.Parallel()
 
-	store := newFakeAckGraphStore()
-	ack := pipeline.SegmentAck{
-		Segment:  "segment-a",
-		RecordID: "rec-1",
-		Attempt:  1,
-		Status:   pipeline.AckCommitted,
+	runtime := pipeline.NewInMemoryRuntime()
+	if err := runtime.SaveCheckpoint(context.Background(), pipeline.Checkpoint{
+		PipelineID:   "pipe-1",
+		SourceCursor: []byte("cursor"),
+		Paused:       true,
+	}); err != nil {
+		t.Fatalf("save checkpoint failed: %v", err)
 	}
 
-	if err := store.CommitAck(context.Background(), ack); err != nil {
-		t.Fatalf("commit ack failed: %v", err)
+	checkpoint, ok, err := runtime.LoadCheckpoint(context.Background(), "pipe-1")
+	if err != nil {
+		t.Fatalf("load checkpoint failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected checkpoint to be found")
+	}
+	if !checkpoint.Paused || string(checkpoint.SourceCursor) != "cursor" {
+		t.Fatalf("unexpected checkpoint: %+v", checkpoint)
 	}
 
-	got, ok, err := store.GetAck(context.Background(), "segment-a", "rec-1")
+	if err := runtime.SaveSegmentState(context.Background(), pipeline.SegmentState{
+		PipelineID: "pipe-1",
+		SegmentID:  "segment-a",
+		RecordID:   "rec-1",
+		AttemptID:  1,
+		Snapshot:   []byte("state"),
+	}); err != nil {
+		t.Fatalf("save segment state failed: %v", err)
+	}
+
+	state, ok, err := runtime.LoadSegmentState(context.Background(), "pipe-1", "segment-a", "rec-1", 1)
+	if err != nil {
+		t.Fatalf("load segment state failed: %v", err)
+	}
+	if !ok || string(state.Snapshot) != "state" {
+		t.Fatalf("unexpected segment state: ok=%v state=%+v", ok, state)
+	}
+
+	if err := runtime.CommitSegment(context.Background(), pipeline.SegmentCommit{
+		PipelineID:     "pipe-1",
+		OriginRecordID: "rec-1",
+		RecordID:       "rec-1/segment-a",
+		SegmentID:      "segment-a",
+		AttemptID:      1,
+		Status:         pipeline.AckCommitted,
+	}); err != nil {
+		t.Fatalf("commit segment failed: %v", err)
+	}
+
+	got, ok, err := runtime.Ack(context.Background(), "pipe-1", "segment-a", "rec-1/segment-a")
 	if err != nil {
 		t.Fatalf("get ack failed: %v", err)
 	}
@@ -448,6 +500,27 @@ func TestAckGraphStoreContractShape(t *testing.T) {
 	}
 	if got.Status != pipeline.AckCommitted {
 		t.Fatalf("unexpected ack status: %v", got.Status)
+	}
+
+	if err := runtime.CommitSegmentOutput(context.Background(), pipeline.SegmentOutputRecord{
+		PipelineID: "pipe-1",
+		SegmentID:  "segment-a",
+		Item: pipeline.Envelope[json.RawMessage]{
+			OriginRecordID: "rec-1",
+			RecordID:       "rec-1/segment-a",
+			AttemptID:      1,
+			Payload:        json.RawMessage(`{"value":"ok"}`),
+		},
+	}); err != nil {
+		t.Fatalf("commit segment output failed: %v", err)
+	}
+
+	outputs, err := runtime.SegmentOutputs(context.Background(), "pipe-1", "segment-a", "rec-1")
+	if err != nil {
+		t.Fatalf("segment outputs failed: %v", err)
+	}
+	if len(outputs) != 1 || string(outputs[0].Payload) != `{"value":"ok"}` {
+		t.Fatalf("unexpected segment outputs: %+v", outputs)
 	}
 }
 

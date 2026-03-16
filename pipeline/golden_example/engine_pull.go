@@ -60,15 +60,21 @@ func (e *EnginePull) Run(ctx context.Context) (RunResult, error) {
 	}
 
 	var segment1Record pipeline.SegmentRecord[json.RawMessage]
-	if err := e.segment1.Process(ctx, pipeline.SegmentRecord[string]{
+	processCtx := noPauseProcessContext{Context: ctx}
+
+	result1, err := e.segment1.Process(processCtx, pipeline.SegmentRecord[string]{
 		RecordID: sourceEnvelope.OriginRecordID,
 		Payload:  sourceEnvelope.Payload,
 		Metadata: sourceEnvelope.Metadata,
 	}, func(out pipeline.SegmentRecord[json.RawMessage]) error {
 		segment1Record = out
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return result, err
+	}
+	if result1.Status != pipeline.ProcessCompleted {
+		return result, context.Canceled
 	}
 
 	segment1OutID := pipeline.RecordID(string(sourceEnvelope.RecordID) + "/segment1")
@@ -93,8 +99,8 @@ func (e *EnginePull) Run(ctx context.Context) (RunResult, error) {
 		return result, err
 	}
 
-	if err := e.segment2.Process(
-		ctx,
+	result2, err := e.segment2.Process(
+		processCtx,
 		pipeline.SegmentRecord[Segment2Input]{
 			RecordID: segment1Out.OriginRecordID,
 			Payload:  segment2Input,
@@ -112,8 +118,12 @@ func (e *EnginePull) Run(ctx context.Context) (RunResult, error) {
 				Metadata:       out.Metadata,
 			})
 		},
-	); err != nil {
+	)
+	if err != nil {
 		return result, err
+	}
+	if result2.Status != pipeline.ProcessCompleted {
+		return result, context.Canceled
 	}
 
 	if err := e.sink.Done(ctx); err != nil {

@@ -67,7 +67,7 @@ func (e *EnginePush) Run(ctx context.Context) (RunResult, error) {
 				Metadata:       record.Metadata,
 			}
 
-			if err := e.segment1.Process(ctx, pipeline.SegmentRecord[string]{
+			result1, err := e.segment1.Process(noPauseProcessContext{Context: ctx}, pipeline.SegmentRecord[string]{
 				RecordID: sourceEnvelope.OriginRecordID,
 				Payload:  sourceEnvelope.Payload,
 				Metadata: sourceEnvelope.Metadata,
@@ -83,8 +83,13 @@ func (e *EnginePush) Run(ctx context.Context) (RunResult, error) {
 					Metadata:       out.Metadata,
 				}
 				return nil
-			}); err != nil {
+			})
+			if err != nil {
 				errCh <- err
+				return
+			}
+			if result1.Status != pipeline.ProcessCompleted {
+				errCh <- context.Canceled
 				return
 			}
 		}
@@ -107,7 +112,8 @@ func (e *EnginePush) Run(ctx context.Context) (RunResult, error) {
 				return
 			}
 
-			err = e.segment2.Process(ctx, pipeline.SegmentRecord[Segment2Input]{
+			var result2 pipeline.ProcessResult
+			result2, err = e.segment2.Process(noPauseProcessContext{Context: ctx}, pipeline.SegmentRecord[Segment2Input]{
 				RecordID: in.OriginRecordID,
 				Payload:  segment2Input,
 				Metadata: in.Metadata,
@@ -125,6 +131,10 @@ func (e *EnginePush) Run(ctx context.Context) (RunResult, error) {
 			})
 			if err != nil {
 				errCh <- err
+				return
+			}
+			if result2.Status != pipeline.ProcessCompleted {
+				errCh <- context.Canceled
 				return
 			}
 		}

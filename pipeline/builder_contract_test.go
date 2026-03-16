@@ -22,7 +22,8 @@ func TestBuilderContractLinearGoldenExample(t *testing.T) {
 		t.Fatalf("plan build failed: %v", err)
 	}
 
-	engine, err := pipeline.NewPullEngine(&golden_example.Source{}, &golden_example.Sink{}, plan)
+	runtime := pipeline.NewInMemoryRuntime()
+	engine, err := pipeline.NewPullEngine(&golden_example.Source{}, &golden_example.Sink{}, plan, runtime)
 	if err != nil {
 		t.Fatalf("engine build failed: %v", err)
 	}

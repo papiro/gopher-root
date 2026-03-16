@@ -10,9 +10,11 @@ import (
 type Engine[TIn, TOut any] interface {
 	// Run starts or continues processing until completion, cancellation, or fatal error.
 	Run(ctx context.Context) error
-	// Pause requests safe boundaries, flushes, and snapshots before returning.
+	// Pause requests the next resumable boundary, snapshots in-flight frontier state,
+	// and persists progress before returning.
 	Pause(ctx context.Context) error
-	// Resume continues processing from the next durable recovery boundary.
+	// Resume restores persisted segment/frontier state and continues processing from
+	// the next durable recovery boundary.
 	Resume(ctx context.Context) error
 	// Retry replays a specific lineage record according to retry and compensation rules.
 	Retry(ctx context.Context, record pipelinetypes.RecordID) error

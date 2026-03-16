@@ -145,7 +145,7 @@ func (p *Plan) Config() EngineConfig {
 	return p.config
 }
 
-func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink], plan *Plan) (Engine[TSource, TSink], error) {
+func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink], plan *Plan, runtime Runtime) (Engine[TSource, TSink], error) {
 	if plan == nil {
 		return nil, ErrBuilderNoSegments
 	}
@@ -155,6 +155,13 @@ func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink],
 	if err := ValidateSink(sink); err != nil {
 		return nil, err
 	}
+	if err := ValidateRuntime(runtime); err != nil {
+		return nil, err
+	}
+	pipelineID, err := planPipelineID(plan)
+	if err != nil {
+		return nil, err
+	}
 
 	engine := &linearPullEngine[TSource, TSink]{
 		source: source,
@@ -162,12 +169,14 @@ func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink],
 			plan.runtime,
 			sink,
 			asSinkWithDone(sink),
+			runtime,
+			pipelineID,
 		),
 	}
 	return engine, nil
 }
 
-func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[TSink], plan *Plan) (Engine[TSource, TSink], error) {
+func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[TSink], plan *Plan, runtime Runtime) (Engine[TSource, TSink], error) {
 	if plan == nil {
 		return nil, ErrBuilderNoSegments
 	}
@@ -177,6 +186,13 @@ func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[T
 	if err := ValidateSink(sink); err != nil {
 		return nil, err
 	}
+	if err := ValidateRuntime(runtime); err != nil {
+		return nil, err
+	}
+	pipelineID, err := planPipelineID(plan)
+	if err != nil {
+		return nil, err
+	}
 
 	engine := &linearPushEngine[TSource, TSink]{
 		source: source,
@@ -184,6 +200,8 @@ func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[T
 			plan.runtime,
 			sink,
 			asSinkWithDone(sink),
+			runtime,
+			pipelineID,
 		),
 	}
 	return engine, nil

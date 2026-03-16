@@ -10,6 +10,10 @@ import (
 type Source[T any] interface {
 	// Next returns (record, true, nil) for data, (zero, false, nil) for end-of-stream, or error.
 	Next(ctx context.Context) (pipelinetypes.SourceRecord[T], bool, error)
+	// SnapshotCursor returns the source-owned resume token at the current durable boundary.
+	SnapshotCursor(ctx context.Context) ([]byte, error)
+	// RestoreCursor restores the source-owned resume token before processing resumes.
+	RestoreCursor(ctx context.Context, cursor []byte) error
 }
 
 // StreamSource yields source records in push mode where upstream controls emission cadence.

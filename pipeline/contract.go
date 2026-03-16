@@ -30,12 +30,19 @@ type (
 	StreamSource[T any] = contracts.StreamSource[T]
 	Sink[T any]         = contracts.Sink[T]
 	SinkWithDone[T any] = contracts.SinkWithDone[T]
+	Runtime             = contracts.Runtime
 
-	SegmentStateStore      = contracts.SegmentStateStore
-	AckGraphStore          = contracts.AckGraphStore
-	Acker                  = contracts.Acker
-	Compensator            = contracts.Compensator
-	Coupling               = contracts.Coupling
+	Checkpoint                         = contracts.Checkpoint
+	CheckpointFrame                    = contracts.CheckpointFrame
+	SegmentState                       = contracts.SegmentState
+	SegmentCommit                      = contracts.SegmentCommit
+	SegmentOutputRecord                = contracts.SegmentOutputRecord
+	TerminalRecord                     = contracts.TerminalRecord
+	Compensator                        = contracts.Compensator
+	ProcessContext                     = contracts.ProcessContext
+	ProcessStatus                      = contracts.ProcessStatus
+	ProcessResult                      = contracts.ProcessResult
+	Coupling                           = contracts.Coupling
 	Segment[TIn, TOut any]             = contracts.Segment[TIn, TOut]
 	CompensatingSegment[TIn, TOut any] = contracts.CompensatingSegment[TIn, TOut]
 	Engine[TIn, TOut any]              = contracts.Engine[TIn, TOut]
@@ -48,6 +55,9 @@ const (
 	AckCommitted     AckStatus = pipelinetypes.AckCommitted
 	AckRetryableFail AckStatus = pipelinetypes.AckRetryableFail
 	AckTerminalFail  AckStatus = pipelinetypes.AckTerminalFail
+
+	ProcessCompleted ProcessStatus = contracts.ProcessCompleted
+	ProcessPaused    ProcessStatus = contracts.ProcessPaused
 )
 
 var (
@@ -56,6 +66,7 @@ var (
 	ErrStreamSourceRequired      = contracts.ErrStreamSourceRequired
 	ErrSegmentIDRequired         = contracts.ErrSegmentIDRequired
 	ErrSinkRequired              = contracts.ErrSinkRequired
+	ErrRuntimeRequired           = contracts.ErrRuntimeRequired
 	ErrCouplingNil               = contracts.ErrCouplingNil
 	ErrCouplingInputInvalidJSON  = contracts.ErrCouplingInputInvalidJSON
 	ErrCouplingOutputInvalidJSON = contracts.ErrCouplingOutputInvalidJSON
@@ -87,6 +98,11 @@ func ValidateStreamSource[T any](s StreamSource[T]) error {
 // ValidateSink performs baseline contract checks independent of engine implementation.
 func ValidateSink[T any](s Sink[T]) error {
 	return contracts.ValidateSink(s)
+}
+
+// ValidateRuntime performs baseline contract checks independent of engine implementation.
+func ValidateRuntime(r Runtime) error {
+	return contracts.ValidateRuntime(r)
 }
 
 // ValidateSegment performs baseline contract checks independent of engine implementation.

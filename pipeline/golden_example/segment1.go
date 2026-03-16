@@ -18,27 +18,28 @@ func (Segment1) Descriptor() pipeline.SegmentDescriptor {
 }
 
 func (Segment1) Process(
-	_ context.Context,
+	_ pipeline.ProcessContext,
 	in pipeline.SegmentRecord[string],
 	out func(pipeline.SegmentRecord[json.RawMessage]) error,
-) error {
+) (pipeline.ProcessResult, error) {
 	payload, err := json.Marshal(struct {
 		Message string `json:"message"`
 	}{
 		Message: in.Payload,
 	})
 	if err != nil {
-		return err
+		return pipeline.ProcessResult{}, err
 	}
 
-	return out(pipeline.SegmentRecord[json.RawMessage]{
+	if err := out(pipeline.SegmentRecord[json.RawMessage]{
 		RecordID: in.RecordID,
 		Payload:  payload,
 		Metadata: in.Metadata,
-	})
+	}); err != nil {
+		return pipeline.ProcessResult{}, err
+	}
+	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
 }
 
-func (Segment1) Flush(context.Context) error               { return nil }
-func (Segment1) Done(context.Context) error                { return nil }
-func (Segment1) Snapshot(context.Context) ([]byte, error) { return nil, nil }
-func (Segment1) Restore(context.Context, []byte) error    { return nil }
+func (Segment1) Restore(context.Context, []byte) error { return nil }
+func (Segment1) Done(context.Context) error            { return nil }
