@@ -1,6 +1,6 @@
 package golden_example
 
-import "github.com/pierre/gopher-root/pipeline"
+import "github.com/pierre/manifold/pipeline"
 
 type ValidationResult struct {
 	Source   error

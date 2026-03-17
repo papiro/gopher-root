@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pierre/gopher-root/pipeline"
-	"github.com/pierre/gopher-root/pipeline/golden_example/couplings"
+	"github.com/pierre/manifold/pipeline"
+	"github.com/pierre/manifold/pipeline/golden_example/couplings"
 )
 
 func Example_engine_push() {

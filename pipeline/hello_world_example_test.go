@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/pierre/gopher-root/pipeline"
+	"github.com/pierre/manifold/pipeline"
 )
 
 // messageToTextCoupling demonstrates a minimal stateless transform artifact.

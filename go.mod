@@ -1,3 +1,3 @@
-module github.com/pierre/gopher-root
+module github.com/pierre/manifold
 
 go 1.25

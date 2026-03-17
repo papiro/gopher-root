@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/pierre/gopher-root/pipeline"
-	"github.com/pierre/gopher-root/pipeline/golden_example/couplings"
+	"github.com/pierre/manifold/pipeline"
+	"github.com/pierre/manifold/pipeline/golden_example/couplings"
 )
 
 // EnginePush is a temporary manual reference implementation kept while the

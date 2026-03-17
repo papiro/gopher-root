@@ -3,7 +3,7 @@ package interfaces
 import (
 	"context"
 
-	pipelinetypes "github.com/pierre/gopher-root/pipeline/types"
+	pipelinetypes "github.com/pierre/manifold/pipeline/types"
 )
 
 // Compensator reverses or mitigates partial side effects for non-idempotent segments.

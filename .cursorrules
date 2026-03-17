@@ -1,0 +1,5 @@
+The Protobuf-based spec is the machine-readable source of truth for manifold's cross-language contract.
+
+Treat the Go implementation as the reference implementation for that spec.
+
+When adding or changing public pipeline contracts, keep the spec and Go implementation aligned and add clear references from the Go implementation back to the spec.

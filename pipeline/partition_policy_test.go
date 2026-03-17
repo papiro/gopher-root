@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/pierre/gopher-root/pipeline"
+	"github.com/pierre/manifold/pipeline"
 )
 
 func TestRoundRobinPolicyRotatesAcrossPartitions(t *testing.T) {

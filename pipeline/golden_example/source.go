@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/pierre/gopher-root/pipeline"
+	"github.com/pierre/manifold/pipeline"
 )
 
 type Source struct {

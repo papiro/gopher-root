@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	pipelinetypes "github.com/pierre/gopher-root/pipeline/types"
+	pipelinetypes "github.com/pierre/manifold/pipeline/types"
 )
 
 var (

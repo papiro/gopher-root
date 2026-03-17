@@ -3,10 +3,12 @@ package pipeline
 import (
 	"encoding/json"
 
-	contracts "github.com/pierre/gopher-root/pipeline/interfaces"
-	pipelinetypes "github.com/pierre/gopher-root/pipeline/types"
+	contracts "github.com/pierre/manifold/pipeline/interfaces"
+	pipelinetypes "github.com/pierre/manifold/pipeline/types"
 )
 
+// The aliases below expose the reference Go surface for the manifold spec defined in
+// spec/README.md and spec/manifold/v1/*.proto.
 type (
 	SegmentID       = pipelinetypes.SegmentID
 	CouplingID      = pipelinetypes.CouplingID

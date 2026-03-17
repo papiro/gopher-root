@@ -3,7 +3,7 @@ package golden_example
 import (
 	"context"
 
-	"github.com/pierre/gopher-root/pipeline"
+	"github.com/pierre/manifold/pipeline"
 )
 
 type Sink struct {

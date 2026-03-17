@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	pipelinetypes "github.com/pierre/gopher-root/pipeline/types"
+	pipelinetypes "github.com/pierre/manifold/pipeline/types"
 )
 
 // Runtime persists framework-owned pipeline durability state.

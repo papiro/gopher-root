@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/pierre/gopher-root/pipeline"
-	"github.com/pierre/gopher-root/pipeline/golden_example"
-	"github.com/pierre/gopher-root/pipeline/golden_example/couplings"
+	"github.com/pierre/manifold/pipeline"
+	"github.com/pierre/manifold/pipeline/golden_example"
+	"github.com/pierre/manifold/pipeline/golden_example/couplings"
 )
 
 func TestBuilderContractLinearGoldenExample(t *testing.T) {

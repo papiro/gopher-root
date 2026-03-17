@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pierre/gopher-root/pipeline"
+	"github.com/pierre/manifold/pipeline"
 )
 
 // These tests define expected runtime semantics for the future engine implementation.

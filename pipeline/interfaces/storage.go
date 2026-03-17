@@ -3,7 +3,7 @@ package interfaces
 import (
 	"context"
 
-	pipelinetypes "github.com/pierre/gopher-root/pipeline/types"
+	pipelinetypes "github.com/pierre/manifold/pipeline/types"
 )
 
 // SegmentStateStore persists segment-owned snapshots used by pause/resume and restart recovery.

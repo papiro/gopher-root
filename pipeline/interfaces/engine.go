@@ -3,7 +3,7 @@ package interfaces
 import (
 	"context"
 
-	pipelinetypes "github.com/pierre/gopher-root/pipeline/types"
+	pipelinetypes "github.com/pierre/manifold/pipeline/types"
 )
 
 // Engine orchestrates source, segments, sinks, and durable progress APIs.

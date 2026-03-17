@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/pierre/gopher-root/pipeline"
+	"github.com/pierre/manifold/pipeline"
 )
 
 type noopCompensator struct{}

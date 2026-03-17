@@ -4,7 +4,7 @@ import (
 	"errors"
 	"reflect"
 
-	pipelinetypes "github.com/pierre/gopher-root/pipeline/types"
+	pipelinetypes "github.com/pierre/manifold/pipeline/types"
 )
 
 // ErrCompensatorRequired indicates a non-idempotent segment lacks required compensation support.

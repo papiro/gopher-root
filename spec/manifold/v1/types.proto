@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package manifold.v1;
+
+option go_package = "github.com/pierre/manifold/spec/manifold/v1;manifoldspecv1";
+
+import "google/protobuf/struct.proto";
+
+// IdempotencyKind declares whether replaying the same logical input is safe.
+enum IdempotencyKind {
+  IDEMPOTENCY_KIND_UNSPECIFIED = 0;
+  IDEMPOTENT = 1;
+  NON_IDEMPOTENT = 2;
+}
+
+// AckStatus describes the durable processing outcome of one segment attempt.
+enum AckStatus {
+  ACK_STATUS_UNSPECIFIED = 0;
+  ACK_COMMITTED = 1;
+  ACK_RETRYABLE_FAIL = 2;
+  ACK_TERMINAL_FAIL = 3;
+}
+
+// ProcessStatus describes whether a Process call completed or paused cooperatively.
+enum ProcessStatus {
+  PROCESS_STATUS_UNSPECIFIED = 0;
+  PROCESS_COMPLETED = 1;
+  PROCESS_PAUSED = 2;
+}
+
+// SourceMode identifies whether ingestion is pull-driven or push-driven.
+enum SourceMode {
+  SOURCE_MODE_UNSPECIFIED = 0;
+  SOURCE_MODE_PULL = 1;
+  SOURCE_MODE_PUSH = 2;
+}
+
+// SourceRecord is the source-provided stable identity plus payload.
+message SourceRecord {
+  string record_id = 1;
+  google.protobuf.Value payload = 2;
+  map<string, string> metadata = 3;
+}
+
+// SegmentRecord carries segment business data plus stable source correlation.
+message SegmentRecord {
+  string record_id = 1;
+  google.protobuf.Value payload = 2;
+  map<string, string> metadata = 3;
+}
+
+// Envelope carries one traced record plus engine-owned execution metadata.
+message Envelope {
+  string origin_record_id = 1;
+  string record_id = 2;
+  uint64 attempt_id = 3;
+  repeated string parent_ids = 4;
+  repeated string segment_path = 5;
+  google.protobuf.Value payload = 6;
+  map<string, string> metadata = 7;
+}
+
+// SegmentDescriptor declares static segment behavior used by orchestration layers.
+message SegmentDescriptor {
+  string id = 1;
+  IdempotencyKind idempotency = 2;
+  optional bool deterministic = 3;
+  string version = 4;
+}
+
+// CouplingDescriptor declares static coupling identity and optional segment compatibility.
+message CouplingDescriptor {
+  string id = 1;
+  string from_segment = 2;
+  string to_segment = 3;
+}
+
+// SegmentAck is the durable acknowledgment for one segment/record attempt pair.
+message SegmentAck {
+  string segment = 1;
+  string record_id = 2;
+  uint64 attempt = 3;
+  AckStatus status = 4;
+  optional string error_message = 5;
+}
+
+// EngineCapabilities advertises which lifecycle operations an implementation supports.
+message EngineCapabilities {
+  repeated SourceMode source_modes = 1;
+  bool supports_pause = 2;
+  bool supports_resume = 3;
+  bool supports_retry = 4;
+  bool supports_trace = 5;
+}

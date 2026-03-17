@@ -1,5 +1,8 @@
 // Package golden_example contains the canonical end-user example for the pipeline package.
 //
+// It also illustrates the reference Go implementation of the manifold spec defined in
+// spec/README.md and spec/manifold/v1/*.proto.
+//
 // The recommended end-user shape is a framework-provided builder so users configure topology
 // instead of implementing their own engines. The minimal linear builder API now reads like:
 //

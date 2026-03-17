@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package manifold.v1;
+
+option go_package = "github.com/pierre/manifold/spec/manifold/v1;manifoldspecv1";
+
+import "manifold/v1/types.proto";
+
+// Connection links one upstream segment to one downstream segment through one coupling.
+message Connection {
+  string from = 1;
+  string to = 2;
+  string coupling_id = 3;
+}
+
+// RoutingPolicyKind defines stable routing policy vocabulary for future topology features.
+enum RoutingPolicyKind {
+  ROUTING_POLICY_KIND_UNSPECIFIED = 0;
+  ROUTING_POLICY_ROUND_ROBIN = 1;
+  ROUTING_POLICY_BY_RECORD_ID = 2;
+  ROUTING_POLICY_BY_METADATA_KEY = 3;
+  ROUTING_POLICY_BY_KEY = 4;
+}
+
+// RoutingPolicy describes how records are routed across lanes or partitions.
+message RoutingPolicy {
+  RoutingPolicyKind kind = 1;
+  string metadata_key = 2;
+  string description = 3;
+}
+
+// Broadcast duplicates one upstream record onto every downstream branch.
+message Broadcast {}
+
+// Parallelism distributes records across worker lanes without duplicating them.
+message Parallelism {
+  uint32 lanes = 1;
+  RoutingPolicy routing_policy = 2;
+}
+
+// Partition deterministically routes each record to exactly one partition.
+message Partition {
+  uint32 partitions = 1;
+  RoutingPolicy routing_policy = 2;
+}
+
+// TopologyModifier reserves builder-level vocabulary for future topology features.
+message TopologyModifier {
+  oneof modifier {
+    Broadcast broadcast = 1;
+    Parallelism parallelism = 2;
+    Partition partition = 3;
+  }
+}
+
+// SegmentRef references a segment by descriptor ID in a plan operation.
+message SegmentRef {
+  string segment_id = 1;
+}
+
+// CouplingRef references a coupling by descriptor ID in a plan operation.
+message CouplingRef {
+  string coupling_id = 1;
+}
+
+// StageOperation describes one ordered builder-like operation in a pipeline plan.
+message StageOperation {
+  oneof operation {
+    SegmentRef through = 1;
+    CouplingRef via = 2;
+    TopologyModifier modifier = 3;
+  }
+}
+
+// PipelinePlan is a provisional machine-readable form of the higher-level pipeline plan.
+//
+// The current Go implementation is the reference implementation, but today it executes a
+// compiled runtime plan rather than consuming this message directly.
+message PipelinePlan {
+  repeated StageOperation operations = 1;
+}
+
+// Topology defines engine-owned segment ordering and connection assignment.
+message Topology {
+  repeated Connection connections = 1;
+  bool allow_ambiguous_order = 2;
+}
+
+// EngineConfig contains metadata needed to validate a topology before runtime.
+message EngineConfig {
+  repeated SegmentDescriptor segments = 1;
+  repeated CouplingDescriptor couplings = 2;
+  Topology topology = 3;
+}
