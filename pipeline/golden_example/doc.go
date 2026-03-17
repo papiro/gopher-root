@@ -13,9 +13,9 @@
 //		Build()
 //
 //	runtime := pipeline.NewInMemoryRuntime()
-//	pullEngine, err := pipeline.NewPullEngine(&Source{}, &Sink{}, plan, runtime)
+//	pullEngine, err := pipeline.NewPullEngine(&Source{}, &Sink{}, plan, runtime, pipeline.WithDebug())
 //
-//	pushEngine, err := pipeline.NewPushEngine(PushSource{}, &Sink{}, plan, runtime)
+//	pushEngine, err := pipeline.NewPushEngine(PushSource{}, &Sink{}, plan, runtime, pipeline.WithDebug())
 //
 // Pause/resume is intended to restore in-flight frontier state, not just the next
 // unread source record. Runtime adapters persist that framework-owned checkpoint data.

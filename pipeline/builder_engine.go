@@ -29,25 +29,36 @@ type linearEngineCore[TSink any] struct {
 	sinkDone   SinkWithDone[TSink]
 	runtime    Runtime
 	pipelineID string
+	options    engineOptions
 }
 
-func newLinearEngineCore[TSink any](plan runtimePlan, sink Sink[TSink], sinkDone SinkWithDone[TSink], runtime Runtime, pipelineID string) linearEngineCore[TSink] {
+func newLinearEngineCore[TSink any](plan runtimePlan, sink Sink[TSink], sinkDone SinkWithDone[TSink], runtime Runtime, pipelineID string, options engineOptions) linearEngineCore[TSink] {
 	return linearEngineCore[TSink]{
 		plan:       plan,
 		sink:       sink,
 		sinkDone:   sinkDone,
 		runtime:    runtime,
 		pipelineID: pipelineID,
+		options:    options,
 	}
 }
 
 func (c *linearEngineCore[TSink]) reset() {}
+
+func (c *linearEngineCore[TSink]) debug(message string, args ...any) {
+	if c.options.debugLogger == nil {
+		return
+	}
+	args = append([]any{"pipeline_id", c.pipelineID}, args...)
+	c.options.debugLogger.Debug(message, args...)
+}
 
 func (c *linearEngineCore[TSink]) sourceFrontier(recordID RecordID, payload any, metadata map[string]string) ([]runtimeFrontierFrame, error) {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("source payload encode failed: %w", err)
 	}
+	c.debug("manifold source emitted frontier frame", "origin_record_id", recordID, "record_id", recordID)
 
 	return []runtimeFrontierFrame{{
 		frame: runtimeFrame{
@@ -64,6 +75,7 @@ func (c *linearEngineCore[TSink]) sourceFrontier(recordID RecordID, payload any,
 func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item runtimeFrontierFrame, pauseRequested func() bool) ([]runtimeFrontierFrame, error) {
 	frame := item.frame
 	if item.nextStageIndex >= len(c.plan.stages) {
+		c.debug("manifold delivering terminal output", "origin_record_id", frame.originRecordID, "record_id", frame.recordID)
 		var sinkPayload TSink
 		if err := json.Unmarshal(frame.payload, &sinkPayload); err != nil {
 			return nil, fmt.Errorf("sink input decode failed: %w", err)
@@ -99,15 +111,24 @@ func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item
 		}); err != nil {
 			return nil, err
 		}
+		c.debug("manifold committed terminal output", "origin_record_id", item.OriginRecordID, "record_id", item.RecordID)
 		return nil, nil
 	}
 
 	stage := c.plan.stages[item.nextStageIndex]
+	c.debug(
+		"manifold processing segment",
+		"segment_id", stage.segment.desc.ID,
+		"origin_record_id", frame.originRecordID,
+		"record_id", frame.recordID,
+		"attempt_id", frame.attemptID,
+	)
 	state, ok, err := c.runtime.LoadSegmentState(ctx, c.pipelineID, stage.segment.desc.ID, frame.recordID, frame.attemptID)
 	if err != nil {
 		return nil, err
 	}
 	if ok {
+		c.debug("manifold restoring segment state", "segment_id", stage.segment.desc.ID, "record_id", frame.recordID, "attempt_id", frame.attemptID)
 		if err := stage.segment.restore(ctx, state.Snapshot); err != nil {
 			return nil, err
 		}
@@ -119,6 +140,7 @@ func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item
 		pauseRequested: pauseRequested,
 	})
 	if err != nil {
+		c.debug("manifold segment failed", "segment_id", stage.segment.desc.ID, "record_id", frame.recordID, "attempt_id", frame.attemptID, "err", err)
 		_ = c.runtime.CommitSegment(ctx, SegmentCommit{
 			PipelineID:     c.pipelineID,
 			OriginRecordID: frame.originRecordID,
@@ -145,6 +167,7 @@ func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item
 			}); err != nil {
 				return nil, err
 			}
+			c.debug("manifold segment paused without outputs", "segment_id", stage.segment.desc.ID, "record_id", frame.recordID, "attempt_id", frame.attemptID)
 			return []runtimeFrontierFrame{item}, nil
 		}
 		if err := c.runtime.DeleteSegmentState(ctx, c.pipelineID, stage.segment.desc.ID, frame.recordID, frame.attemptID); err != nil {
@@ -161,6 +184,7 @@ func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item
 		}); err != nil {
 			return nil, err
 		}
+		c.debug("manifold segment completed without outputs", "segment_id", stage.segment.desc.ID, "record_id", frame.recordID, "attempt_id", frame.attemptID)
 		return nil, nil
 	}
 
@@ -196,6 +220,7 @@ func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item
 				return nil, err
 			}
 			child.payload = coupled
+			c.debug("manifold applied coupling", "segment_id", stage.segment.desc.ID, "record_id", child.recordID)
 		}
 		if err := c.runtime.CommitSegment(ctx, SegmentCommit{
 			PipelineID:     c.pipelineID,
@@ -213,6 +238,7 @@ func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item
 			nextStageIndex: item.nextStageIndex + 1,
 		})
 	}
+	c.debug("manifold segment emitted outputs", "segment_id", stage.segment.desc.ID, "record_id", frame.recordID, "attempt_id", frame.attemptID, "outputs", len(outputs), "paused", result.Status == ProcessPaused)
 
 	if result.Status == ProcessPaused {
 		if err := c.runtime.SaveSegmentState(ctx, SegmentState{
@@ -224,6 +250,7 @@ func (c *linearEngineCore[TSink]) processFrontierFrame(ctx context.Context, item
 		}); err != nil {
 			return nil, err
 		}
+		c.debug("manifold segment saved pause state", "segment_id", stage.segment.desc.ID, "record_id", frame.recordID, "attempt_id", frame.attemptID)
 		return append([]runtimeFrontierFrame{item}, nextFrames...), nil
 	}
 	if err := c.runtime.DeleteSegmentState(ctx, c.pipelineID, stage.segment.desc.ID, frame.recordID, frame.attemptID); err != nil {
@@ -289,11 +316,13 @@ func checkpointFrontierFromRuntime(in []runtimeFrontierFrame, plan runtimePlan) 
 func (c *linearEngineCore[TSink]) finish(ctx context.Context) error {
 	// Segment Done hooks run in plan order after source consumption completes.
 	for _, stage := range c.plan.stages {
+		c.debug("manifold running segment done hook", "segment_id", stage.segment.desc.ID)
 		if err := stage.segment.done(ctx); err != nil {
 			return err
 		}
 	}
 	if c.sinkDone != nil {
+		c.debug("manifold running sink done hook")
 		if err := c.sinkDone.Done(ctx); err != nil {
 			return err
 		}
@@ -349,6 +378,7 @@ func (e *linearPullEngine[TSource, TSink]) Run(ctx context.Context) error {
 	defer e.finishRun(nil)
 
 	e.core.reset()
+	e.core.debug("manifold pull engine starting", "resuming", len(frontier) > 0)
 	if len(frontier) > 0 {
 		remaining, paused, err := e.runFrontier(ctx, frontier)
 		if err != nil {
@@ -407,6 +437,7 @@ func (e *linearPullEngine[TSource, TSink]) Run(ctx context.Context) error {
 		e.finishRun(err)
 		return err
 	}
+	e.core.debug("manifold pull engine finished")
 	return nil
 }
 
@@ -432,6 +463,7 @@ func (e *linearPullEngine[TSource, TSink]) Pause(ctx context.Context) error {
 	e.pauseRequest = true
 	e.pauseWaiters = append(e.pauseWaiters, waiter)
 	e.mu.Unlock()
+	e.core.debug("manifold pause requested")
 
 	select {
 	case <-ctx.Done():
@@ -442,11 +474,13 @@ func (e *linearPullEngine[TSource, TSink]) Pause(ctx context.Context) error {
 }
 
 func (e *linearPullEngine[TSource, TSink]) Resume(ctx context.Context) error {
+	e.core.debug("manifold resume requested")
 	checkpoint, ok, err := e.core.runtime.LoadCheckpoint(ctx, e.core.pipelineID)
 	if err != nil {
 		return err
 	}
 	if ok {
+		e.core.debug("manifold loaded checkpoint", "frontier", len(checkpoint.Frontier), "paused", checkpoint.Paused)
 		if err := e.source.RestoreCursor(ctx, checkpoint.SourceCursor); err != nil {
 			return err
 		}
@@ -481,6 +515,7 @@ type linearPushEngine[TSource, TSink any] struct {
 
 func (e *linearPushEngine[TSource, TSink]) Run(ctx context.Context) error {
 	e.core.reset()
+	e.core.debug("manifold push engine starting")
 	stream := e.source.Stream(ctx)
 	// Push engines drain the source stream until it closes or the context is canceled.
 	for {
@@ -489,6 +524,7 @@ func (e *linearPushEngine[TSource, TSink]) Run(ctx context.Context) error {
 			return ctx.Err()
 		case record, ok := <-stream:
 			if !ok {
+				e.core.debug("manifold push source completed")
 				return e.core.finish(ctx)
 			}
 			frontier, err := e.core.sourceFrontier(record.RecordID, record.Payload, record.Metadata)
@@ -523,6 +559,7 @@ func (e *linearPullEngine[TSource, TSink]) saveCheckpoint(ctx context.Context, p
 	if err != nil {
 		return err
 	}
+	e.core.debug("manifold saving checkpoint", "paused", paused, "frontier", len(frontier))
 	return e.core.runtime.SaveCheckpoint(ctx, Checkpoint{
 		PipelineID:   e.core.pipelineID,
 		SourceCursor: cursor,
@@ -566,6 +603,7 @@ func (e *linearPullEngine[TSource, TSink]) pauseWithFrontier(ctx context.Context
 	if err := e.saveCheckpoint(ctx, true, frontier); err != nil {
 		return err
 	}
+	e.core.debug("manifold pause checkpoint saved", "frontier", len(frontier))
 
 	e.mu.Lock()
 	e.paused = true

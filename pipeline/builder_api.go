@@ -145,7 +145,7 @@ func (p *Plan) Config() EngineConfig {
 	return p.config
 }
 
-func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink], plan *Plan, runtime Runtime) (Engine[TSource, TSink], error) {
+func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink], plan *Plan, runtime Runtime, opts ...EngineOption) (Engine[TSource, TSink], error) {
 	if plan == nil {
 		return nil, ErrBuilderNoSegments
 	}
@@ -162,6 +162,7 @@ func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink],
 	if err != nil {
 		return nil, err
 	}
+	options := collectEngineOptions(opts)
 
 	engine := &linearPullEngine[TSource, TSink]{
 		source: source,
@@ -171,12 +172,13 @@ func NewPullEngine[TSource, TSink any](source Source[TSource], sink Sink[TSink],
 			asSinkWithDone(sink),
 			runtime,
 			pipelineID,
+			options,
 		),
 	}
 	return engine, nil
 }
 
-func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[TSink], plan *Plan, runtime Runtime) (Engine[TSource, TSink], error) {
+func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[TSink], plan *Plan, runtime Runtime, opts ...EngineOption) (Engine[TSource, TSink], error) {
 	if plan == nil {
 		return nil, ErrBuilderNoSegments
 	}
@@ -193,6 +195,7 @@ func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[T
 	if err != nil {
 		return nil, err
 	}
+	options := collectEngineOptions(opts)
 
 	engine := &linearPushEngine[TSource, TSink]{
 		source: source,
@@ -202,6 +205,7 @@ func NewPushEngine[TSource, TSink any](source StreamSource[TSource], sink Sink[T
 			asSinkWithDone(sink),
 			runtime,
 			pipelineID,
+			options,
 		),
 	}
 	return engine, nil
