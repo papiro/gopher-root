@@ -55,6 +55,12 @@ func syntheticCouplingID(index int, coupling Coupling) CouplingID {
 	return CouplingID(fmt.Sprintf("builder-coupling-%02d-%s", index+1, name))
 }
 
+type identityCoupling struct{}
+
+func (identityCoupling) Couple(segmentOutput json.RawMessage) (json.RawMessage, error) {
+	return append(json.RawMessage(nil), segmentOutput...), nil
+}
+
 func sanitizeTypeName(t reflect.Type) string {
 	if t == nil {
 		return "coupling"

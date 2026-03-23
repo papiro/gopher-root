@@ -10,6 +10,62 @@ import (
 	"github.com/pierre/manifold/pipeline/golden_example/couplings"
 )
 
+type stringPassthroughSegment struct {
+	id pipeline.SegmentID
+}
+
+func (s stringPassthroughSegment) Descriptor() pipeline.SegmentDescriptor {
+	return pipeline.SegmentDescriptor{
+		ID:                   s.id,
+		Idempotency:          pipeline.Idempotent,
+		CompatibilityVersion: "v1",
+	}
+}
+
+func (s stringPassthroughSegment) Process(
+	_ pipeline.ProcessContext,
+	in pipeline.SegmentInput[string],
+	out func(pipeline.SegmentOutput[string]) error,
+) (pipeline.ProcessResult, error) {
+	if err := out(pipeline.SegmentOutput[string]{
+		Payload:  in.Payload,
+		Metadata: in.Metadata,
+	}); err != nil {
+		return pipeline.ProcessResult{}, err
+	}
+	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
+}
+
+func (stringPassthroughSegment) Done(context.Context) error { return nil }
+
+type intSinkSegment struct {
+	id pipeline.SegmentID
+}
+
+func (s intSinkSegment) Descriptor() pipeline.SegmentDescriptor {
+	return pipeline.SegmentDescriptor{
+		ID:                   s.id,
+		Idempotency:          pipeline.Idempotent,
+		CompatibilityVersion: "v1",
+	}
+}
+
+func (s intSinkSegment) Process(
+	_ pipeline.ProcessContext,
+	in pipeline.SegmentInput[int],
+	out func(pipeline.SegmentOutput[int]) error,
+) (pipeline.ProcessResult, error) {
+	if err := out(pipeline.SegmentOutput[int]{
+		Payload:  in.Payload,
+		Metadata: in.Metadata,
+	}); err != nil {
+		return pipeline.ProcessResult{}, err
+	}
+	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
+}
+
+func (intSinkSegment) Done(context.Context) error { return nil }
+
 func TestBuilderContractLinearGoldenExample(t *testing.T) {
 	t.Parallel()
 
@@ -62,6 +118,44 @@ func TestBuilderContractPartitionRequiresPolicy(t *testing.T) {
 		Build()
 	if !errors.Is(err, pipeline.ErrBuilderPartitionPolicyRequired) {
 		t.Fatalf("expected ErrBuilderPartitionPolicyRequired, got %v", err)
+	}
+}
+
+func TestBuilderContractImplicitIdentityCouplingForExactAdjacentTypes(t *testing.T) {
+	t.Parallel()
+
+	plan, err := pipeline.NewBuilder().
+		Through(stringPassthroughSegment{id: "segment-a"}).
+		Through(stringPassthroughSegment{id: "segment-b"}).
+		Build()
+	if err != nil {
+		t.Fatalf("expected implicit identity coupling build to succeed, got %v", err)
+	}
+
+	cfg := plan.Config()
+	if len(cfg.Couplings) != 1 {
+		t.Fatalf("expected one synthetic coupling, got %d", len(cfg.Couplings))
+	}
+	if cfg.Couplings[0].FromSegment != "segment-a" || cfg.Couplings[0].ToSegment != "segment-b" {
+		t.Fatalf("unexpected synthetic coupling descriptor: %+v", cfg.Couplings[0])
+	}
+	if len(cfg.Topology.Connections) != 1 {
+		t.Fatalf("expected one topology connection, got %d", len(cfg.Topology.Connections))
+	}
+	if cfg.Topology.Connections[0].CouplingID == "" {
+		t.Fatal("expected synthetic topology connection to reference a coupling ID")
+	}
+}
+
+func TestBuilderContractAdjacentTypeMismatchRequiresExplicitCoupling(t *testing.T) {
+	t.Parallel()
+
+	_, err := pipeline.NewBuilder().
+		Through(stringPassthroughSegment{id: "segment-a"}).
+		Through(intSinkSegment{id: "segment-b"}).
+		Build()
+	if !errors.Is(err, pipeline.ErrBuilderImplicitCouplingRequired) {
+		t.Fatalf("expected ErrBuilderImplicitCouplingRequired, got %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrBuilderSegmentRequired               = errors.New("builder segment is required")
 	ErrBuilderCouplingRequired              = errors.New("builder coupling is required")
+	ErrBuilderImplicitCouplingRequired      = errors.New("builder adjacent segments require an explicit coupling")
 	ErrBuilderSegmentExpected               = errors.New("builder expected a segment at this position")
 	ErrBuilderCouplingExpected              = errors.New("builder expected a coupling at this position")
 	ErrBuilderNoSegments                    = errors.New("builder requires at least one segment")

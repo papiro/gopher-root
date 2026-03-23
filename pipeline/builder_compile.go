@@ -1,6 +1,9 @@
 package pipeline
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 type runtimeStage struct {
 	segment       runtimeSegment
@@ -16,7 +19,6 @@ func compileLinearPlan(ops []builderOp) (runtimePlan, EngineConfig, error) {
 		return runtimePlan{}, EngineConfig{}, ErrBuilderNoSegments
 	}
 
-	expectSegment := true
 	segments := make([]runtimeSegment, 0, len(ops))
 	couplings := make([]Coupling, 0, len(ops))
 
@@ -29,9 +31,6 @@ func compileLinearPlan(ops []builderOp) (runtimePlan, EngineConfig, error) {
 		case builderOpPartition:
 			return runtimePlan{}, EngineConfig{}, fmt.Errorf("%w: Partition(%d)", ErrBuilderTopologyModifierUnsupported, op.lanes)
 		case builderOpSegment:
-			if !expectSegment {
-				return runtimePlan{}, EngineConfig{}, ErrBuilderCouplingExpected
-			}
 			segment, err := newRuntimeSegment(op.segment)
 			if err != nil {
 				return runtimePlan{}, EngineConfig{}, err
@@ -39,14 +38,19 @@ func compileLinearPlan(ops []builderOp) (runtimePlan, EngineConfig, error) {
 			if err := validateRuntimeSegment(segment); err != nil {
 				return runtimePlan{}, EngineConfig{}, err
 			}
+			if len(segments) > 0 && len(couplings) == len(segments)-1 {
+				implicit, err := implicitCouplingBetween(segments[len(segments)-1], segment)
+				if err != nil {
+					return runtimePlan{}, EngineConfig{}, err
+				}
+				couplings = append(couplings, implicit)
+			}
 			segments = append(segments, segment)
-			expectSegment = false
 		case builderOpCoupling:
-			if expectSegment {
+			if len(segments) == 0 || len(couplings) >= len(segments) {
 				return runtimePlan{}, EngineConfig{}, ErrBuilderSegmentExpected
 			}
 			couplings = append(couplings, op.coupler)
-			expectSegment = true
 		default:
 			return runtimePlan{}, EngineConfig{}, fmt.Errorf("unknown builder op kind %q", op.kind)
 		}
@@ -55,7 +59,7 @@ func compileLinearPlan(ops []builderOp) (runtimePlan, EngineConfig, error) {
 	if len(segments) == 0 {
 		return runtimePlan{}, EngineConfig{}, ErrBuilderNoSegments
 	}
-	if expectSegment && len(couplings) > 0 {
+	if len(couplings) >= len(segments) {
 		return runtimePlan{}, EngineConfig{}, ErrBuilderSegmentExpected
 	}
 	if len(segments) > 1 && len(couplings) != len(segments)-1 {
@@ -99,4 +103,27 @@ func compileLinearPlan(ops []builderOp) (runtimePlan, EngineConfig, error) {
 			Connections: connections,
 		},
 	}, nil
+}
+
+func implicitCouplingBetween(from, to runtimeSegment) (Coupling, error) {
+	fromPayloadType := from.outputPayloadType()
+	toPayloadType := to.inputPayloadType()
+	if fromPayloadType != toPayloadType {
+		return nil, fmt.Errorf(
+			"%w: %q outputs %s but %q expects %s",
+			ErrBuilderImplicitCouplingRequired,
+			from.desc.ID,
+			reflectTypeString(fromPayloadType),
+			to.desc.ID,
+			reflectTypeString(toPayloadType),
+		)
+	}
+	return identityCoupling{}, nil
+}
+
+func reflectTypeString(t reflect.Type) string {
+	if t == nil {
+		return "<nil>"
+	}
+	return t.String()
 }

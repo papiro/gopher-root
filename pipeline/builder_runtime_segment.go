@@ -129,6 +129,16 @@ func validateRuntimeSegment(segment runtimeSegment) error {
 	return nil
 }
 
+func (s runtimeSegment) inputPayloadType() reflect.Type {
+	field, _ := s.inputRecordType.FieldByName("Payload")
+	return field.Type
+}
+
+func (s runtimeSegment) outputPayloadType() reflect.Type {
+	field, _ := s.outputRecordType.FieldByName("Payload")
+	return field.Type
+}
+
 func (s runtimeSegment) canRecover() bool {
 	return s.recoverMethod.IsValid()
 }
