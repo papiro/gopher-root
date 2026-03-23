@@ -42,17 +42,25 @@ message SourceRecord {
   map<string, string> metadata = 3;
 }
 
-// SegmentRecord carries segment business data plus stable source correlation.
-message SegmentRecord {
-  string record_id = 1;
+// SegmentInput carries one segment input plus stable source correlation.
+message SegmentInput {
+  string source_record_id = 1;
   google.protobuf.Value payload = 2;
   map<string, string> metadata = 3;
+}
+
+// SegmentOutput carries one segment output business value.
+message SegmentOutput {
+  google.protobuf.Value payload = 1;
+  map<string, string> metadata = 2;
 }
 
 // Envelope carries one traced record plus engine-owned execution metadata.
 message Envelope {
   string origin_record_id = 1;
   string record_id = 2;
+  // attempt_id starts at 1 for a new source lineage and increases when that
+  // lineage is retried or replayed.
   uint64 attempt_id = 3;
   repeated string parent_ids = 4;
   repeated string segment_path = 5;
@@ -65,7 +73,7 @@ message SegmentDescriptor {
   string id = 1;
   IdempotencyKind idempotency = 2;
   optional bool deterministic = 3;
-  string version = 4;
+  string compatibility_version = 4;
 }
 
 // CouplingDescriptor declares static coupling identity and optional segment compatibility.
@@ -91,4 +99,5 @@ message EngineCapabilities {
   bool supports_resume = 3;
   bool supports_retry = 4;
   bool supports_trace = 5;
+  bool supports_restart = 6;
 }

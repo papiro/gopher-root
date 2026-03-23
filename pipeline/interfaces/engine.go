@@ -8,14 +8,18 @@ import (
 
 // Engine orchestrates source, segments, sinks, and durable progress APIs.
 type Engine[TIn, TOut any] interface {
-	// Run starts or continues processing until completion, cancellation, or fatal error.
+	// Run starts processing from the latest durable recovery boundary if one exists,
+	// otherwise it starts from the source's initial position.
 	Run(ctx context.Context) error
-	// Pause requests the next resumable boundary, snapshots in-flight frontier state,
-	// and persists progress before returning.
+	// Pause requests the next resumable boundary and persists enough progress to
+	// infer the next resumable lineage step before returning.
 	Pause(ctx context.Context) error
-	// Resume restores persisted segment/frontier state and continues processing from
-	// the next durable recovery boundary.
+	// Resume explicitly requires durable recovery state and continues processing from
+	// the next persisted recovery boundary.
 	Resume(ctx context.Context) error
+	// Restart discards durable recovery state for this pipeline, runs any configured
+	// restart hook, and then starts from the source's initial position.
+	Restart(ctx context.Context) error
 	// Retry replays a specific lineage record according to retry and compensation rules.
 	Retry(ctx context.Context, record pipelinetypes.RecordID) error
 	// Trace returns terminal outputs derived from one source record identity.

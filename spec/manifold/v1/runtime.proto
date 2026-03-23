@@ -7,58 +7,121 @@ option go_package = "github.com/pierre/manifold/spec/manifold/v1;manifoldspecv1"
 import "google/protobuf/struct.proto";
 import "manifold/v1/types.proto";
 
-// Checkpoint is the latest recoverable boundary for one pipeline.
-message Checkpoint {
+// SourceResumeState captures the source-side state needed to resume one pipeline.
+message SourceResumeState {
   string pipeline_id = 1;
   bytes source_cursor = 2;
-  repeated CheckpointFrame frontier = 3;
-  bool paused = 4;
+  bool paused = 3;
 }
 
-// CheckpointFrame captures one in-flight frontier item that should resume at one segment.
-message CheckpointFrame {
-  string origin_record_id = 1;
-  string record_id = 2;
-  uint64 attempt_id = 3;
-  repeated string parent_ids = 4;
-  repeated string segment_path = 5;
-  string next_segment_id = 6;
-  google.protobuf.Value payload = 7;
-  map<string, string> metadata = 8;
+// ResumeReason describes why queued work is being resumed.
+enum ResumeReason {
+  RESUME_REASON_UNSPECIFIED = 0;
+  RESUME_REASON_AFTER_PAUSE = 1;
+  RESUME_REASON_AFTER_CRASH = 2;
 }
 
-// SegmentState captures framework-managed resumable state for one segment attempt.
-message SegmentState {
+// ResumeInfo carries framework-owned metadata about one resumed segment input.
+message ResumeInfo {
   string pipeline_id = 1;
   string segment_id = 2;
   string record_id = 3;
   uint64 attempt_id = 4;
-  bytes snapshot = 5;
+  ResumeReason reason = 5;
 }
 
-// SegmentCommit captures one durable segment outcome.
-message SegmentCommit {
+// SourceProgress captures one durable source advance.
+message SourceProgress {
+  SourceResumeState source_resume_state = 1;
+  StartedRecord started = 2;
+  PendingSegmentWork pending_work = 3;
+}
+
+// StartedRecord captures one source record that has durably entered the pipeline.
+message StartedRecord {
   string pipeline_id = 1;
-  string origin_record_id = 2;
+  Envelope item = 2;
+}
+
+// PendingSegmentWork captures one queued segment input awaiting processing.
+message PendingSegmentWork {
+  string pipeline_id = 1;
+  string next_segment_id = 2;
+  Envelope item = 3;
+}
+
+// PendingSegmentWorkKey identifies one queued segment input.
+message PendingSegmentWorkKey {
+  string pipeline_id = 1;
+  string next_segment_id = 2;
   string record_id = 3;
-  repeated string parent_ids = 4;
-  string segment_id = 5;
-  uint64 attempt_id = 6;
-  AckStatus status = 7;
-  optional string error_message = 8;
+}
+
+// SegmentProgressStatus describes the durable state for one queued segment input.
+enum SegmentProgressStatus {
+  SEGMENT_PROGRESS_STATUS_UNSPECIFIED = 0;
+  SEGMENT_PROGRESS_STATUS_IN_PROGRESS = 1;
+  SEGMENT_PROGRESS_STATUS_PAUSED = 2;
+  SEGMENT_PROGRESS_STATUS_COMPLETED = 3;
+  SEGMENT_PROGRESS_STATUS_RETRYABLE_FAILED = 4;
+  SEGMENT_PROGRESS_STATUS_TERMINAL_FAILED = 5;
+}
+
+// SegmentProgress captures the durable state of one segment input while it is being processed.
+message SegmentProgress {
+  string pipeline_id = 1;
+  string segment_id = 2;
+  string compatibility_version = 3;
+  string record_id = 4;
+  uint64 attempt_id = 5;
+  string input_checksum = 6;
+  SegmentProgressStatus status = 7;
+  uint64 emitted_count = 8;
+}
+
+// RuntimeDelta captures one atomic durability delta for pipeline runtime state.
+//
+// It is not a full checkpoint or snapshot of the entire pipeline. Instead, each
+// value records one state transition, such as updating one segment progress row,
+// deleting one pending work item, enqueueing downstream work, or persisting one
+// emitted durable record.
+message RuntimeDelta {
+  optional SegmentProgress progress = 1;
+  optional PendingSegmentWorkKey delete_pending_work = 2;
+  repeated PendingSegmentWork enqueue_pending_work = 3;
+  optional SegmentOutputRecord output_record = 4;
+  optional TerminalRecord terminal_record = 5;
+  optional DeterministicSegmentResult deterministic_result = 6;
 }
 
 // SegmentOutputRecord captures one intermediate output emitted by one segment.
 message SegmentOutputRecord {
   string pipeline_id = 1;
   string segment_id = 2;
-  Envelope item = 3;
+  string compatibility_version = 3;
+  string input_checksum = 4;
+  Envelope item = 5;
 }
 
 // TerminalRecord captures one durable terminal output.
 message TerminalRecord {
   string pipeline_id = 1;
   Envelope item = 2;
+}
+
+// DeterministicSegmentResult captures reusable outputs for one deterministic segment input.
+message DeterministicSegmentResult {
+  string pipeline_id = 1;
+  string segment_id = 2;
+  string compatibility_version = 3;
+  string input_checksum = 4;
+  repeated DeterministicSegmentOutput outputs = 5;
+}
+
+// DeterministicSegmentOutput captures one reusable deterministic output payload.
+message DeterministicSegmentOutput {
+  google.protobuf.Value payload = 1;
+  map<string, string> metadata = 2;
 }
 
 // TraceRecord groups terminal outputs for one source identity.

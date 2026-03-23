@@ -13,8 +13,9 @@ var (
 	ErrBuilderParallelismPositive           = errors.New("builder parallelism must be greater than zero")
 	ErrBuilderPartitionCountPositive        = errors.New("builder partition count must be greater than zero")
 	ErrBuilderUnsupportedSegmentShape       = errors.New("builder segment does not expose a supported Process signature")
-	ErrBuilderSegmentRecordIDMismatch       = errors.New("segment output record ID must preserve source identity")
 	ErrBuilderUnsupportedLifecycleOperation = errors.New("engine lifecycle operation is not implemented yet")
+	ErrBuilderResumeStateRequired           = errors.New("engine resume requires durable runtime state")
+	ErrBuilderResumePlanMismatch            = errors.New("engine resume state does not match the current plan")
 )
 
 type builderOpKind string

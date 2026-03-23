@@ -1,7 +1,6 @@
-CREATE TABLE IF NOT EXISTS mf_checkpoints (
+CREATE TABLE IF NOT EXISTS mf_source_resume_states (
   pipeline_id text PRIMARY KEY,
   source_cursor blob NOT NULL,
-  frontier_json blob NOT NULL,
   paused integer NOT NULL DEFAULT 0 CHECK (paused IN (0, 1))
 );
 

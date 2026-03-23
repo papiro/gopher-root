@@ -59,15 +59,15 @@ func (e *EnginePull) Run(ctx context.Context) (RunResult, error) {
 		Metadata:       record.Metadata,
 	}
 
-	var segment1Record pipeline.SegmentRecord[json.RawMessage]
+	var segment1Output pipeline.SegmentOutput[json.RawMessage]
 	processCtx := noPauseProcessContext{Context: ctx}
 
-	result1, err := e.segment1.Process(processCtx, pipeline.SegmentRecord[string]{
-		RecordID: sourceEnvelope.OriginRecordID,
-		Payload:  sourceEnvelope.Payload,
-		Metadata: sourceEnvelope.Metadata,
-	}, func(out pipeline.SegmentRecord[json.RawMessage]) error {
-		segment1Record = out
+	result1, err := e.segment1.Process(processCtx, pipeline.SegmentInput[string]{
+		SourceRecordID: sourceEnvelope.OriginRecordID,
+		Payload:        sourceEnvelope.Payload,
+		Metadata:       sourceEnvelope.Metadata,
+	}, func(out pipeline.SegmentOutput[json.RawMessage]) error {
+		segment1Output = out
 		return nil
 	})
 	if err != nil {
@@ -79,13 +79,13 @@ func (e *EnginePull) Run(ctx context.Context) (RunResult, error) {
 
 	segment1OutID := pipeline.RecordID(string(sourceEnvelope.RecordID) + "/segment1")
 	segment1Out := pipeline.Envelope[json.RawMessage]{
-		OriginRecordID: segment1Record.RecordID,
+		OriginRecordID: sourceEnvelope.OriginRecordID,
 		RecordID:       segment1OutID,
 		AttemptID:      sourceEnvelope.AttemptID,
 		ParentIDs:      []pipeline.RecordID{sourceEnvelope.RecordID},
 		SegmentPath:    []pipeline.SegmentID{"segment1"},
-		Payload:        segment1Record.Payload,
-		Metadata:       segment1Record.Metadata,
+		Payload:        segment1Output.Payload,
+		Metadata:       segment1Output.Metadata,
 	}
 
 	coupledJSON, err := pipeline.ApplyCoupling(e.coupling, segment1Out.Payload)
@@ -101,15 +101,15 @@ func (e *EnginePull) Run(ctx context.Context) (RunResult, error) {
 
 	result2, err := e.segment2.Process(
 		processCtx,
-		pipeline.SegmentRecord[Segment2Input]{
-			RecordID: segment1Out.OriginRecordID,
-			Payload:  segment2Input,
-			Metadata: segment1Out.Metadata,
+		pipeline.SegmentInput[Segment2Input]{
+			SourceRecordID: segment1Out.OriginRecordID,
+			Payload:        segment2Input,
+			Metadata:       segment1Out.Metadata,
 		},
-		func(out pipeline.SegmentRecord[string]) error {
+		func(out pipeline.SegmentOutput[string]) error {
 			sinkOutID := pipeline.RecordID(string(segment1Out.RecordID) + "/segment2")
 			return e.sink.Consume(ctx, pipeline.Envelope[string]{
-				OriginRecordID: out.RecordID,
+				OriginRecordID: segment1Out.OriginRecordID,
 				RecordID:       sinkOutID,
 				AttemptID:      segment1Out.AttemptID,
 				ParentIDs:      []pipeline.RecordID{segment1Out.RecordID},

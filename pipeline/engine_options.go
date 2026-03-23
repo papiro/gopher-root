@@ -1,13 +1,19 @@
 package pipeline
 
 import (
+	"context"
 	"log/slog"
 	"os"
 )
 
 type engineOptions struct {
 	debugLogger *slog.Logger
+	onRestart   RestartHook
 }
+
+// RestartHook runs after manifold-owned runtime state is reset and before
+// Restart begins replaying from source zero.
+type RestartHook func(ctx context.Context, pipelineID string) error
 
 // EngineOption configures runtime-only engine behavior at construction time.
 type EngineOption interface {
@@ -35,6 +41,17 @@ func WithDebugLogger(logger *slog.Logger) EngineOption {
 			return
 		}
 		opts.debugLogger = logger
+	})
+}
+
+// WithOnRestart registers a callback that runs after runtime reset succeeds and
+// before Restart begins replaying from source zero.
+//
+// This hook is intended for pipeline-author cleanup of app-owned state. It is
+// outside the runtime reset transaction and should therefore be idempotent.
+func WithOnRestart(hook RestartHook) EngineOption {
+	return engineOptionFunc(func(opts *engineOptions) {
+		opts.onRestart = hook
 	})
 }
 

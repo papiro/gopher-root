@@ -40,297 +40,176 @@ func NewSQLiteRuntime(ctx context.Context, databasePath string) (*SQLiteRuntime,
 	return &SQLiteRuntime{db: db}, nil
 }
 
-func (r *SQLiteRuntime) LoadCheckpoint(ctx context.Context, pipelineID string) (Checkpoint, bool, error) {
+func (r *SQLiteRuntime) LoadSourceResumeState(ctx context.Context, pipelineID string) (SourceResumeState, bool, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT source_cursor, frontier_json, paused
-		FROM mf_checkpoints
+		SELECT source_cursor, paused
+		FROM mf_source_resume_states
 		WHERE pipeline_id = ?
 	`, pipelineID)
 
 	var (
 		sourceCursor []byte
-		frontierJSON []byte
 		paused       bool
 	)
-	if err := row.Scan(&sourceCursor, &frontierJSON, &paused); err != nil {
+	if err := row.Scan(&sourceCursor, &paused); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return Checkpoint{}, false, nil
+			return SourceResumeState{}, false, nil
 		}
-		return Checkpoint{}, false, fmt.Errorf("load checkpoint %q: %w", pipelineID, err)
+		return SourceResumeState{}, false, fmt.Errorf("load source resume state %q: %w", pipelineID, err)
 	}
 
-	var frontier []CheckpointFrame
-	if err := decodeJSON(frontierJSON, &frontier); err != nil {
-		return Checkpoint{}, false, fmt.Errorf("decode checkpoint frontier %q: %w", pipelineID, err)
-	}
-
-	return Checkpoint{
+	return SourceResumeState{
 		PipelineID:   pipelineID,
 		SourceCursor: append([]byte(nil), sourceCursor...),
-		Frontier:     frontier,
 		Paused:       paused,
 	}, true, nil
 }
 
-func (r *SQLiteRuntime) SaveCheckpoint(ctx context.Context, checkpoint Checkpoint) error {
-	frontierJSON, err := encodeJSON(checkpoint.Frontier)
+func (r *SQLiteRuntime) SaveSourceResumeState(ctx context.Context, resumeState SourceResumeState) error {
+	return saveSourceResumeStateExec(ctx, r.db, resumeState)
+}
+
+func (r *SQLiteRuntime) CommitSourceProgress(ctx context.Context, progress SourceProgress) error {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("encode checkpoint frontier %q: %w", checkpoint.PipelineID, err)
+		return fmt.Errorf("begin source progress %q: %w", progress.ResumeState.PipelineID, err)
 	}
+	defer tx.Rollback()
 
-	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO mf_checkpoints (
-			pipeline_id,
-			source_cursor,
-			frontier_json,
-			paused
-		) VALUES (?, ?, ?, ?)
-		ON CONFLICT(pipeline_id) DO UPDATE SET
-			source_cursor = excluded.source_cursor,
-			frontier_json = excluded.frontier_json,
-			paused = excluded.paused
-	`, checkpoint.PipelineID, checkpoint.SourceCursor, frontierJSON, checkpoint.Paused); err != nil {
-		return fmt.Errorf("save checkpoint %q: %w", checkpoint.PipelineID, err)
+	if err := saveSourceResumeStateExec(ctx, tx, progress.ResumeState); err != nil {
+		return err
 	}
-
-	return nil
-}
-
-func (r *SQLiteRuntime) SaveSegmentState(ctx context.Context, state SegmentState) error {
-	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO mf_segment_states (
-			pipeline_id,
-			segment_id,
-			record_id,
-			attempt_id,
-			snapshot
-		) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(pipeline_id, segment_id, record_id, attempt_id) DO UPDATE SET
-			snapshot = excluded.snapshot
-	`, state.PipelineID, state.SegmentID, state.RecordID, state.AttemptID, state.Snapshot); err != nil {
-		return fmt.Errorf(
-			"save segment state pipeline=%q segment=%q record=%q attempt=%d: %w",
-			state.PipelineID,
-			state.SegmentID,
-			state.RecordID,
-			state.AttemptID,
-			err,
-		)
+	if err := commitSourceRecordExec(ctx, tx, progress.Started); err != nil {
+		return err
 	}
-
-	return nil
-}
-
-func (r *SQLiteRuntime) LoadSegmentState(ctx context.Context, pipelineID string, segment SegmentID, record RecordID, attempt AttemptID) (SegmentState, bool, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT snapshot
-		FROM mf_segment_states
-		WHERE pipeline_id = ? AND segment_id = ? AND record_id = ? AND attempt_id = ?
-	`, pipelineID, segment, record, attempt)
-
-	var snapshot []byte
-	if err := row.Scan(&snapshot); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return SegmentState{}, false, nil
+	if progress.PendingWork.PipelineID != "" {
+		if err := commitPendingWorkExec(ctx, tx, progress.PendingWork); err != nil {
+			return err
 		}
-		return SegmentState{}, false, fmt.Errorf(
-			"load segment state pipeline=%q segment=%q record=%q attempt=%d: %w",
-			pipelineID,
-			segment,
-			record,
-			attempt,
-			err,
-		)
 	}
 
-	return SegmentState{
-		PipelineID: pipelineID,
-		SegmentID:  segment,
-		RecordID:   record,
-		AttemptID:  attempt,
-		Snapshot:   append([]byte(nil), snapshot...),
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit source progress %q: %w", progress.ResumeState.PipelineID, err)
+	}
+	return nil
+}
+
+func (r *SQLiteRuntime) CommitProgressUpdate(ctx context.Context, update RuntimeDelta) error {
+	pipelineID := ""
+	if update.Progress != nil {
+		pipelineID = update.Progress.PipelineID
+	} else if update.DeletePendingWork != nil {
+		pipelineID = update.DeletePendingWork.PipelineID
+	} else if len(update.EnqueuePendingWork) > 0 {
+		pipelineID = update.EnqueuePendingWork[0].PipelineID
+	} else if update.OutputRecord != nil {
+		pipelineID = update.OutputRecord.PipelineID
+	} else if update.TerminalRecord != nil {
+		pipelineID = update.TerminalRecord.PipelineID
+	} else if update.DeterministicResult != nil {
+		pipelineID = update.DeterministicResult.PipelineID
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin progress update %q: %w", pipelineID, err)
+	}
+	defer tx.Rollback()
+
+	if update.Progress != nil {
+		if err := saveSegmentProgressExec(ctx, tx, *update.Progress); err != nil {
+			return err
+		}
+	}
+	if update.DeletePendingWork != nil {
+		if err := deletePendingWorkExec(ctx, tx, *update.DeletePendingWork); err != nil {
+			return err
+		}
+	}
+	for _, item := range update.EnqueuePendingWork {
+		if err := commitPendingWorkExec(ctx, tx, item); err != nil {
+			return err
+		}
+	}
+	if update.OutputRecord != nil {
+		if err := commitSegmentOutputExec(ctx, tx, *update.OutputRecord); err != nil {
+			return err
+		}
+	}
+	if update.TerminalRecord != nil {
+		if err := commitTerminalExec(ctx, tx, *update.TerminalRecord); err != nil {
+			return err
+		}
+	}
+	if update.DeterministicResult != nil {
+		if err := saveDeterministicResultExec(ctx, tx, *update.DeterministicResult); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit progress update %q: %w", pipelineID, err)
+	}
+	return nil
+}
+
+func (r *SQLiteRuntime) DeterministicResult(ctx context.Context, pipelineID string, segment SegmentID, compatibilityVersion string, inputChecksum string) (DeterministicSegmentResult, bool, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT outputs_json
+		FROM mf_deterministic_segment_results
+		WHERE pipeline_id = ? AND segment_id = ? AND compatibility_version = ? AND input_checksum = ?
+	`, pipelineID, segment, compatibilityVersion, inputChecksum)
+
+	var outputsJSON []byte
+	if err := row.Scan(&outputsJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DeterministicSegmentResult{}, false, nil
+		}
+		return DeterministicSegmentResult{}, false, fmt.Errorf("load deterministic result pipeline=%q segment=%q version=%q checksum=%q: %w", pipelineID, segment, compatibilityVersion, inputChecksum, err)
+	}
+
+	var outputs []DeterministicSegmentOutput
+	if err := decodeJSON(outputsJSON, &outputs); err != nil {
+		return DeterministicSegmentResult{}, false, fmt.Errorf("decode deterministic result pipeline=%q segment=%q version=%q checksum=%q: %w", pipelineID, segment, compatibilityVersion, inputChecksum, err)
+	}
+
+	return DeterministicSegmentResult{
+		PipelineID:           pipelineID,
+		SegmentID:            segment,
+		CompatibilityVersion: compatibilityVersion,
+		InputChecksum:        inputChecksum,
+		Outputs:              cloneDeterministicOutputs(outputs),
 	}, true, nil
 }
 
-func (r *SQLiteRuntime) DeleteSegmentState(ctx context.Context, pipelineID string, segment SegmentID, record RecordID, attempt AttemptID) error {
-	if _, err := r.db.ExecContext(ctx, `
-		DELETE FROM mf_segment_states
-		WHERE pipeline_id = ? AND segment_id = ? AND record_id = ? AND attempt_id = ?
-	`, pipelineID, segment, record, attempt); err != nil {
-		return fmt.Errorf(
-			"delete segment state pipeline=%q segment=%q record=%q attempt=%d: %w",
-			pipelineID,
-			segment,
-			record,
-			attempt,
-			err,
-		)
-	}
-
-	return nil
-}
-
-func (r *SQLiteRuntime) CommitSegment(ctx context.Context, commit SegmentCommit) error {
-	parentIDsJSON, err := encodeJSON(commit.ParentIDs)
+func (r *SQLiteRuntime) ResetPipeline(ctx context.Context, pipelineID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf(
-			"encode segment commit parents pipeline=%q segment=%q record=%q: %w",
-			commit.PipelineID,
-			commit.SegmentID,
-			commit.RecordID,
-			err,
-		)
+		return fmt.Errorf("begin reset pipeline %q: %w", pipelineID, err)
+	}
+	defer tx.Rollback()
+
+	for _, query := range []string{
+		`DELETE FROM mf_terminal_records WHERE pipeline_id = ?`,
+		`DELETE FROM mf_segment_outputs WHERE pipeline_id = ?`,
+		`DELETE FROM mf_pending_segment_work WHERE pipeline_id = ?`,
+		`DELETE FROM mf_segment_progress WHERE pipeline_id = ?`,
+		`DELETE FROM mf_deterministic_segment_results WHERE pipeline_id = ?`,
+		`DELETE FROM mf_source_records WHERE pipeline_id = ?`,
+		`DELETE FROM mf_source_resume_states WHERE pipeline_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, query, pipelineID); err != nil {
+			return fmt.Errorf("reset pipeline %q: %w", pipelineID, err)
+		}
 	}
 
-	var errorMessage any
-	if commit.Err != nil {
-		errorMessage = commit.Err.Error()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit reset pipeline %q: %w", pipelineID, err)
 	}
-
-	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO mf_segment_acks (
-			pipeline_id,
-			segment_id,
-			record_id,
-			attempt_id,
-			origin_record_id,
-			parent_ids_json,
-			status,
-			error_message
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(pipeline_id, segment_id, record_id) DO UPDATE SET
-			attempt_id = excluded.attempt_id,
-			origin_record_id = excluded.origin_record_id,
-			parent_ids_json = excluded.parent_ids_json,
-			status = excluded.status,
-			error_message = excluded.error_message
-	`,
-		commit.PipelineID,
-		commit.SegmentID,
-		commit.RecordID,
-		commit.AttemptID,
-		commit.OriginRecordID,
-		parentIDsJSON,
-		commit.Status,
-		errorMessage,
-	); err != nil {
-		return fmt.Errorf(
-			"commit segment pipeline=%q segment=%q record=%q: %w",
-			commit.PipelineID,
-			commit.SegmentID,
-			commit.RecordID,
-			err,
-		)
-	}
-
 	return nil
 }
 
-func (r *SQLiteRuntime) CommitSegmentOutput(ctx context.Context, output SegmentOutputRecord) error {
-	encoded, err := encodeRawEnvelope(output.Item)
-	if err != nil {
-		return fmt.Errorf(
-			"encode segment output pipeline=%q segment=%q record=%q: %w",
-			output.PipelineID,
-			output.SegmentID,
-			output.Item.RecordID,
-			err,
-		)
-	}
-
-	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO mf_segment_outputs (
-			pipeline_id,
-			segment_id,
-			origin_record_id,
-			record_id,
-			attempt_id,
-			parent_ids_json,
-			segment_path_json,
-			payload_json,
-			metadata_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(pipeline_id, segment_id, record_id) DO UPDATE SET
-			origin_record_id = excluded.origin_record_id,
-			attempt_id = excluded.attempt_id,
-			parent_ids_json = excluded.parent_ids_json,
-			segment_path_json = excluded.segment_path_json,
-			payload_json = excluded.payload_json,
-			metadata_json = excluded.metadata_json
-	`,
-		output.PipelineID,
-		output.SegmentID,
-		output.Item.OriginRecordID,
-		output.Item.RecordID,
-		output.Item.AttemptID,
-		encoded.ParentIDsJSON,
-		encoded.SegmentPathJSON,
-		encoded.PayloadJSON,
-		encoded.MetadataJSON,
-	); err != nil {
-		return fmt.Errorf(
-			"commit segment output pipeline=%q segment=%q record=%q: %w",
-			output.PipelineID,
-			output.SegmentID,
-			output.Item.RecordID,
-			err,
-		)
-	}
-
-	return nil
-}
-
-func (r *SQLiteRuntime) CommitTerminal(ctx context.Context, terminal TerminalRecord) error {
-	encoded, err := encodeRawEnvelope(terminal.Item)
-	if err != nil {
-		return fmt.Errorf(
-			"encode terminal record pipeline=%q record=%q: %w",
-			terminal.PipelineID,
-			terminal.Item.RecordID,
-			err,
-		)
-	}
-
-	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO mf_terminal_records (
-			pipeline_id,
-			origin_record_id,
-			record_id,
-			attempt_id,
-			parent_ids_json,
-			segment_path_json,
-			payload_json,
-			metadata_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(pipeline_id, record_id) DO UPDATE SET
-			origin_record_id = excluded.origin_record_id,
-			attempt_id = excluded.attempt_id,
-			parent_ids_json = excluded.parent_ids_json,
-			segment_path_json = excluded.segment_path_json,
-			payload_json = excluded.payload_json,
-			metadata_json = excluded.metadata_json
-	`,
-		terminal.PipelineID,
-		terminal.Item.OriginRecordID,
-		terminal.Item.RecordID,
-		terminal.Item.AttemptID,
-		encoded.ParentIDsJSON,
-		encoded.SegmentPathJSON,
-		encoded.PayloadJSON,
-		encoded.MetadataJSON,
-	); err != nil {
-		return fmt.Errorf(
-			"commit terminal record pipeline=%q record=%q: %w",
-			terminal.PipelineID,
-			terminal.Item.RecordID,
-			err,
-		)
-	}
-
-	return nil
-}
-
-func (r *SQLiteRuntime) SegmentOutputs(ctx context.Context, pipelineID string, segment SegmentID, origin RecordID) ([]Envelope[json.RawMessage], error) {
+func (r *SQLiteRuntime) SourceRecords(ctx context.Context, pipelineID string) ([]Envelope[json.RawMessage], error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT
 			origin_record_id,
@@ -340,46 +219,97 @@ func (r *SQLiteRuntime) SegmentOutputs(ctx context.Context, pipelineID string, s
 			segment_path_json,
 			payload_json,
 			metadata_json
-		FROM mf_segment_outputs
-		WHERE pipeline_id = ? AND segment_id = ? AND origin_record_id = ?
+		FROM mf_source_records
+		WHERE pipeline_id = ?
 		ORDER BY id ASC
-	`, pipelineID, segment, origin)
+	`, pipelineID)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"query segment outputs pipeline=%q segment=%q origin=%q: %w",
-			pipelineID,
-			segment,
-			origin,
-			err,
-		)
+		return nil, fmt.Errorf("query source records pipeline=%q: %w", pipelineID, err)
 	}
 	defer rows.Close()
 
-	var outputs []Envelope[json.RawMessage]
+	var items []Envelope[json.RawMessage]
 	for rows.Next() {
 		item, err := scanRawEnvelope(rows)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"scan segment output pipeline=%q segment=%q origin=%q: %w",
-				pipelineID,
-				segment,
-				origin,
-				err,
-			)
+			return nil, fmt.Errorf("scan source record pipeline=%q: %w", pipelineID, err)
 		}
-		outputs = append(outputs, item)
+		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf(
-			"iterate segment outputs pipeline=%q segment=%q origin=%q: %w",
-			pipelineID,
-			segment,
-			origin,
-			err,
-		)
+		return nil, fmt.Errorf("iterate source records pipeline=%q: %w", pipelineID, err)
 	}
+	return items, nil
+}
 
-	return outputs, nil
+func (r *SQLiteRuntime) PendingWork(ctx context.Context, pipelineID string) ([]PendingSegmentWork, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			next_segment_id,
+			origin_record_id,
+			record_id,
+			attempt_id,
+			parent_ids_json,
+			segment_path_json,
+			payload_json,
+			metadata_json
+		FROM mf_pending_segment_work
+		WHERE pipeline_id = ?
+		ORDER BY id ASC
+	`, pipelineID)
+	if err != nil {
+		return nil, fmt.Errorf("query pending work pipeline=%q: %w", pipelineID, err)
+	}
+	defer rows.Close()
+
+	var items []PendingSegmentWork
+	for rows.Next() {
+		var nextSegmentID SegmentID
+		item, err := scanRawEnvelopeWithPrefix(rows, &nextSegmentID)
+		if err != nil {
+			return nil, fmt.Errorf("scan pending work pipeline=%q: %w", pipelineID, err)
+		}
+		items = append(items, PendingSegmentWork{
+			PipelineID:    pipelineID,
+			NextSegmentID: nextSegmentID,
+			Item:          item,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending work pipeline=%q: %w", pipelineID, err)
+	}
+	return items, nil
+}
+
+func (r *SQLiteRuntime) LoadSegmentProgress(ctx context.Context, pipelineID string, segment SegmentID, record RecordID, attempt AttemptID) (SegmentProgress, bool, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT compatibility_version, input_checksum, status, emitted_count
+		FROM mf_segment_progress
+		WHERE pipeline_id = ? AND segment_id = ? AND record_id = ? AND attempt_id = ?
+	`, pipelineID, segment, record, attempt)
+
+	var (
+		compatibilityVersion string
+		inputChecksum        string
+		status               SegmentProgressStatus
+		emittedCount         int
+	)
+	if err := row.Scan(&compatibilityVersion, &inputChecksum, &status, &emittedCount); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SegmentProgress{}, false, nil
+		}
+		return SegmentProgress{}, false, fmt.Errorf("load segment progress pipeline=%q segment=%q record=%q attempt=%d: %w", pipelineID, segment, record, attempt, err)
+	}
+	return SegmentProgress{
+		PipelineID:           pipelineID,
+		SegmentID:            segment,
+		CompatibilityVersion: compatibilityVersion,
+		RecordID:             record,
+		AttemptID:            attempt,
+		InputChecksum:        inputChecksum,
+		Status:               status,
+		EmittedCount:         emittedCount,
+	}, true, nil
 }
 
 func (r *SQLiteRuntime) Trace(ctx context.Context, pipelineID string, origin RecordID) ([]Envelope[json.RawMessage], error) {
@@ -416,43 +346,244 @@ func (r *SQLiteRuntime) Trace(ctx context.Context, pipelineID string, origin Rec
 	return outputs, nil
 }
 
-func (r *SQLiteRuntime) Ack(ctx context.Context, pipelineID string, segment SegmentID, record RecordID) (SegmentAck, bool, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT attempt_id, status, error_message
-		FROM mf_segment_acks
-		WHERE pipeline_id = ? AND segment_id = ? AND record_id = ?
-	`, pipelineID, segment, record)
+type sqliteExec interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
 
-	var (
-		attempt      AttemptID
-		status       AckStatus
-		errorMessage sql.NullString
-	)
-	if err := row.Scan(&attempt, &status, &errorMessage); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return SegmentAck{}, false, nil
-		}
-		return SegmentAck{}, false, fmt.Errorf(
-			"load ack pipeline=%q segment=%q record=%q: %w",
-			pipelineID,
-			segment,
-			record,
+func saveSourceResumeStateExec(ctx context.Context, exec sqliteExec, resumeState SourceResumeState) error {
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO mf_source_resume_states (
+			pipeline_id,
+			source_cursor,
+			paused
+		) VALUES (?, ?, ?)
+		ON CONFLICT(pipeline_id) DO UPDATE SET
+			source_cursor = excluded.source_cursor,
+			paused = excluded.paused
+	`, resumeState.PipelineID, resumeState.SourceCursor, resumeState.Paused); err != nil {
+		return fmt.Errorf("save source resume state %q: %w", resumeState.PipelineID, err)
+	}
+
+	return nil
+}
+
+func commitSourceRecordExec(ctx context.Context, exec sqliteExec, started StartedRecord) error {
+	encoded, err := encodeRawEnvelope(started.Item)
+	if err != nil {
+		return fmt.Errorf("encode source record pipeline=%q record=%q: %w", started.PipelineID, started.Item.RecordID, err)
+	}
+
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO mf_source_records (
+			pipeline_id,
+			origin_record_id,
+			record_id,
+			attempt_id,
+			parent_ids_json,
+			segment_path_json,
+			payload_json,
+			metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(pipeline_id, record_id) DO UPDATE SET
+			origin_record_id = excluded.origin_record_id,
+			attempt_id = excluded.attempt_id,
+			parent_ids_json = excluded.parent_ids_json,
+			segment_path_json = excluded.segment_path_json,
+			payload_json = excluded.payload_json,
+			metadata_json = excluded.metadata_json
+	`, started.PipelineID, started.Item.OriginRecordID, started.Item.RecordID, started.Item.AttemptID, encoded.ParentIDsJSON, encoded.SegmentPathJSON, encoded.PayloadJSON, encoded.MetadataJSON); err != nil {
+		return fmt.Errorf("commit source record pipeline=%q record=%q: %w", started.PipelineID, started.Item.RecordID, err)
+	}
+	return nil
+}
+
+func commitPendingWorkExec(ctx context.Context, exec sqliteExec, item PendingSegmentWork) error {
+	encoded, err := encodeRawEnvelope(item.Item)
+	if err != nil {
+		return fmt.Errorf("encode pending work pipeline=%q next_segment=%q record=%q: %w", item.PipelineID, item.NextSegmentID, item.Item.RecordID, err)
+	}
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO mf_pending_segment_work (
+			pipeline_id,
+			next_segment_id,
+			origin_record_id,
+			record_id,
+			attempt_id,
+			parent_ids_json,
+			segment_path_json,
+			payload_json,
+			metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(pipeline_id, next_segment_id, record_id) DO NOTHING
+	`, item.PipelineID, item.NextSegmentID, item.Item.OriginRecordID, item.Item.RecordID, item.Item.AttemptID, encoded.ParentIDsJSON, encoded.SegmentPathJSON, encoded.PayloadJSON, encoded.MetadataJSON); err != nil {
+		return fmt.Errorf("commit pending work pipeline=%q next_segment=%q record=%q: %w", item.PipelineID, item.NextSegmentID, item.Item.RecordID, err)
+	}
+	return nil
+}
+
+func deletePendingWorkExec(ctx context.Context, exec sqliteExec, key PendingSegmentWorkKey) error {
+	if _, err := exec.ExecContext(ctx, `
+		DELETE FROM mf_pending_segment_work
+		WHERE pipeline_id = ? AND next_segment_id = ? AND record_id = ?
+	`, key.PipelineID, key.NextSegmentID, key.RecordID); err != nil {
+		return fmt.Errorf("delete pending work pipeline=%q next_segment=%q record=%q: %w", key.PipelineID, key.NextSegmentID, key.RecordID, err)
+	}
+	return nil
+}
+
+func saveSegmentProgressExec(ctx context.Context, exec sqliteExec, progress SegmentProgress) error {
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO mf_segment_progress (
+			pipeline_id,
+			segment_id,
+			record_id,
+			attempt_id,
+			compatibility_version,
+			input_checksum,
+			status,
+			emitted_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(pipeline_id, segment_id, record_id, attempt_id) DO UPDATE SET
+			compatibility_version = excluded.compatibility_version,
+			input_checksum = excluded.input_checksum,
+			status = excluded.status,
+			emitted_count = excluded.emitted_count
+	`, progress.PipelineID, progress.SegmentID, progress.RecordID, progress.AttemptID, progress.CompatibilityVersion, progress.InputChecksum, progress.Status, progress.EmittedCount); err != nil {
+		return fmt.Errorf("save segment progress pipeline=%q segment=%q record=%q attempt=%d: %w", progress.PipelineID, progress.SegmentID, progress.RecordID, progress.AttemptID, err)
+	}
+	return nil
+}
+
+func commitSegmentOutputExec(ctx context.Context, exec sqliteExec, output SegmentOutputRecord) error {
+	encoded, err := encodeRawEnvelope(output.Item)
+	if err != nil {
+		return fmt.Errorf(
+			"encode segment output pipeline=%q segment=%q record=%q: %w",
+			output.PipelineID,
+			output.SegmentID,
+			output.Item.RecordID,
 			err,
 		)
 	}
 
-	var ackErr error
-	if errorMessage.Valid {
-		ackErr = errors.New(errorMessage.String)
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO mf_segment_outputs (
+			pipeline_id,
+			segment_id,
+			compatibility_version,
+			input_checksum,
+			origin_record_id,
+			record_id,
+			attempt_id,
+			parent_ids_json,
+			segment_path_json,
+			payload_json,
+			metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(pipeline_id, segment_id, record_id) DO UPDATE SET
+			compatibility_version = excluded.compatibility_version,
+			input_checksum = excluded.input_checksum,
+			origin_record_id = excluded.origin_record_id,
+			attempt_id = excluded.attempt_id,
+			parent_ids_json = excluded.parent_ids_json,
+			segment_path_json = excluded.segment_path_json,
+			payload_json = excluded.payload_json,
+			metadata_json = excluded.metadata_json
+	`,
+		output.PipelineID,
+		output.SegmentID,
+		output.CompatibilityVersion,
+		output.InputChecksum,
+		output.Item.OriginRecordID,
+		output.Item.RecordID,
+		output.Item.AttemptID,
+		encoded.ParentIDsJSON,
+		encoded.SegmentPathJSON,
+		encoded.PayloadJSON,
+		encoded.MetadataJSON,
+	); err != nil {
+		return fmt.Errorf(
+			"commit segment output pipeline=%q segment=%q record=%q: %w",
+			output.PipelineID,
+			output.SegmentID,
+			output.Item.RecordID,
+			err,
+		)
 	}
 
-	return SegmentAck{
-		Segment:  segment,
-		RecordID: record,
-		Attempt:  attempt,
-		Status:   status,
-		Err:      ackErr,
-	}, true, nil
+	return nil
+}
+
+func saveDeterministicResultExec(ctx context.Context, exec sqliteExec, result DeterministicSegmentResult) error {
+	outputsJSON, err := encodeJSON(result.Outputs)
+	if err != nil {
+		return fmt.Errorf("encode deterministic result pipeline=%q segment=%q version=%q checksum=%q: %w", result.PipelineID, result.SegmentID, result.CompatibilityVersion, result.InputChecksum, err)
+	}
+
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO mf_deterministic_segment_results (
+			pipeline_id,
+			segment_id,
+			compatibility_version,
+			input_checksum,
+			outputs_json
+		) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(pipeline_id, segment_id, compatibility_version, input_checksum) DO UPDATE SET
+			outputs_json = excluded.outputs_json
+	`, result.PipelineID, result.SegmentID, result.CompatibilityVersion, result.InputChecksum, outputsJSON); err != nil {
+		return fmt.Errorf("save deterministic result pipeline=%q segment=%q version=%q checksum=%q: %w", result.PipelineID, result.SegmentID, result.CompatibilityVersion, result.InputChecksum, err)
+	}
+	return nil
+}
+
+func commitTerminalExec(ctx context.Context, exec sqliteExec, terminal TerminalRecord) error {
+	encoded, err := encodeRawEnvelope(terminal.Item)
+	if err != nil {
+		return fmt.Errorf(
+			"encode terminal record pipeline=%q record=%q: %w",
+			terminal.PipelineID,
+			terminal.Item.RecordID,
+			err,
+		)
+	}
+
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO mf_terminal_records (
+			pipeline_id,
+			origin_record_id,
+			record_id,
+			attempt_id,
+			parent_ids_json,
+			segment_path_json,
+			payload_json,
+			metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(pipeline_id, record_id) DO UPDATE SET
+			origin_record_id = excluded.origin_record_id,
+			attempt_id = excluded.attempt_id,
+			parent_ids_json = excluded.parent_ids_json,
+			segment_path_json = excluded.segment_path_json,
+			payload_json = excluded.payload_json,
+			metadata_json = excluded.metadata_json
+	`,
+		terminal.PipelineID,
+		terminal.Item.OriginRecordID,
+		terminal.Item.RecordID,
+		terminal.Item.AttemptID,
+		encoded.ParentIDsJSON,
+		encoded.SegmentPathJSON,
+		encoded.PayloadJSON,
+		encoded.MetadataJSON,
+	); err != nil {
+		return fmt.Errorf(
+			"commit terminal record pipeline=%q record=%q: %w",
+			terminal.PipelineID,
+			terminal.Item.RecordID,
+			err,
+		)
+	}
+
+	return nil
 }
 
 type encodedRawEnvelope struct {
@@ -523,6 +654,54 @@ func scanRawEnvelope(scanner interface {
 		return Envelope[json.RawMessage]{}, err
 	}
 
+	return Envelope[json.RawMessage]{
+		OriginRecordID: originRecordID,
+		RecordID:       recordID,
+		AttemptID:      attemptID,
+		ParentIDs:      parentIDs,
+		SegmentPath:    segmentPath,
+		Payload:        append(json.RawMessage(nil), payloadJSON...),
+		Metadata:       metadata,
+	}, nil
+}
+
+func scanRawEnvelopeWithPrefix(scanner interface {
+	Scan(dest ...any) error
+}, prefixDest ...any) (Envelope[json.RawMessage], error) {
+	var (
+		originRecordID  RecordID
+		recordID        RecordID
+		attemptID       AttemptID
+		parentIDsJSON   []byte
+		segmentPathJSON []byte
+		payloadJSON     []byte
+		metadataJSON    []byte
+	)
+	dest := append(prefixDest,
+		&originRecordID,
+		&recordID,
+		&attemptID,
+		&parentIDsJSON,
+		&segmentPathJSON,
+		&payloadJSON,
+		&metadataJSON,
+	)
+	if err := scanner.Scan(dest...); err != nil {
+		return Envelope[json.RawMessage]{}, err
+	}
+
+	var parentIDs []RecordID
+	if err := decodeJSON(parentIDsJSON, &parentIDs); err != nil {
+		return Envelope[json.RawMessage]{}, err
+	}
+	var segmentPath []SegmentID
+	if err := decodeJSON(segmentPathJSON, &segmentPath); err != nil {
+		return Envelope[json.RawMessage]{}, err
+	}
+	var metadata map[string]string
+	if err := decodeJSON(metadataJSON, &metadata); err != nil {
+		return Envelope[json.RawMessage]{}, err
+	}
 	return Envelope[json.RawMessage]{
 		OriginRecordID: originRecordID,
 		RecordID:       recordID,

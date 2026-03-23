@@ -17,8 +17,10 @@
 //
 //	pushEngine, err := pipeline.NewPushEngine(PushSource{}, &Sink{}, plan, runtime, pipeline.WithDebug())
 //
-// Pause/resume is intended to restore in-flight frontier state, not just the next
-// unread source record. Runtime adapters persist that framework-owned checkpoint data.
+// Run resumes from the latest durable recovery boundary when one exists.
+// Pause/resume restores work by inferring the next resumable lineage step from
+// durable source records, segment outputs, segment commits, terminal outputs,
+// and any in-flight segment snapshots. Restart is the explicit same-plan replay path.
 //
 // Future topology examples under this builder shape include:
 //

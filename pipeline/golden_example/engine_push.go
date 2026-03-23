@@ -67,14 +67,14 @@ func (e *EnginePush) Run(ctx context.Context) (RunResult, error) {
 				Metadata:       record.Metadata,
 			}
 
-			result1, err := e.segment1.Process(noPauseProcessContext{Context: ctx}, pipeline.SegmentRecord[string]{
-				RecordID: sourceEnvelope.OriginRecordID,
-				Payload:  sourceEnvelope.Payload,
-				Metadata: sourceEnvelope.Metadata,
-			}, func(out pipeline.SegmentRecord[json.RawMessage]) error {
+			result1, err := e.segment1.Process(noPauseProcessContext{Context: ctx}, pipeline.SegmentInput[string]{
+				SourceRecordID: sourceEnvelope.OriginRecordID,
+				Payload:        sourceEnvelope.Payload,
+				Metadata:       sourceEnvelope.Metadata,
+			}, func(out pipeline.SegmentOutput[json.RawMessage]) error {
 				segment1OutID := pipeline.RecordID(string(sourceEnvelope.RecordID) + "/segment1")
 				segOutCh <- pipeline.Envelope[json.RawMessage]{
-					OriginRecordID: out.RecordID,
+					OriginRecordID: sourceEnvelope.OriginRecordID,
 					RecordID:       segment1OutID,
 					AttemptID:      sourceEnvelope.AttemptID,
 					ParentIDs:      []pipeline.RecordID{sourceEnvelope.RecordID},
@@ -113,14 +113,14 @@ func (e *EnginePush) Run(ctx context.Context) (RunResult, error) {
 			}
 
 			var result2 pipeline.ProcessResult
-			result2, err = e.segment2.Process(noPauseProcessContext{Context: ctx}, pipeline.SegmentRecord[Segment2Input]{
-				RecordID: in.OriginRecordID,
-				Payload:  segment2Input,
-				Metadata: in.Metadata,
-			}, func(out pipeline.SegmentRecord[string]) error {
+			result2, err = e.segment2.Process(noPauseProcessContext{Context: ctx}, pipeline.SegmentInput[Segment2Input]{
+				SourceRecordID: in.OriginRecordID,
+				Payload:        segment2Input,
+				Metadata:       in.Metadata,
+			}, func(out pipeline.SegmentOutput[string]) error {
 				sinkOutID := pipeline.RecordID(string(in.RecordID) + "/segment2")
 				return e.sink.Consume(ctx, pipeline.Envelope[string]{
-					OriginRecordID: out.RecordID,
+					OriginRecordID: in.OriginRecordID,
 					RecordID:       sinkOutID,
 					AttemptID:      in.AttemptID,
 					ParentIDs:      []pipeline.RecordID{in.RecordID},

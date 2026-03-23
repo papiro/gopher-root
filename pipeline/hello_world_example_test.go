@@ -28,8 +28,8 @@ func (messageToTextCoupling) Couple(segmentOutput json.RawMessage) (json.RawMess
 func Example_helloWorldContracts() {
 	cfg := pipeline.EngineConfig{
 		Segments: []pipeline.SegmentDescriptor{
-			{ID: "source", Idempotency: pipeline.Idempotent, Version: "v1"},
-			{ID: "sink", Idempotency: pipeline.Idempotent, Version: "v1"},
+			{ID: "source", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
+			{ID: "sink", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
 		},
 		Couplings: []pipeline.CouplingDescriptor{
 			{ID: "source-to-sink", FromSegment: "source", ToSegment: "sink"},

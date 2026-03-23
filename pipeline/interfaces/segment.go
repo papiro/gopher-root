@@ -21,42 +21,69 @@ type ProcessContext interface {
 }
 
 // ProcessStatus describes whether one Process call completed its logical work or
-// paused cooperatively with resumable state.
+// paused cooperatively.
 type ProcessStatus int
 
 const (
 	// ProcessCompleted means the segment fully handled the logical input for this call.
 	ProcessCompleted ProcessStatus = iota
-	// ProcessPaused means the segment stopped at a safe resumable boundary and returned
-	// snapshot bytes that allow Process to continue for the same logical input later.
+	// ProcessPaused means the segment stopped at a safe resumable boundary and should
+	// be re-entered later through the queue/progress recovery model.
 	ProcessPaused
 )
 
 // ProcessResult is the cooperative outcome from one Process call.
 type ProcessResult struct {
 	Status ProcessStatus
-	// Snapshot contains segment-owned resumable state. It should describe only the
-	// remaining work not already committed through the out callback.
-	Snapshot []byte
 }
 
-// Segment transforms one input record into zero or more output records.
+// ResumeReason describes why the framework is invoking segment recovery.
+type ResumeReason int
+
+const (
+	// ResumeReasonUnknown is the zero value and is not used for real resumed work.
+	ResumeReasonUnknown ResumeReason = iota
+	// ResumeAfterPause means the pipeline is resuming from a prior cooperative pause.
+	ResumeAfterPause
+	// ResumeAfterCrash means the pipeline is recovering after an unclean shutdown.
+	ResumeAfterCrash
+)
+
+// ResumeInfo carries framework-owned metadata about one resumed segment input.
+type ResumeInfo struct {
+	PipelineID string
+	SegmentID  pipelinetypes.SegmentID
+	RecordID   pipelinetypes.RecordID
+	AttemptID  pipelinetypes.AttemptID
+	Reason     ResumeReason
+}
+
+// Segment transforms one business input into zero or more downstream business outputs.
 type Segment[TIn, TOut any] interface {
 	// Descriptor returns segment identity and replay policy metadata.
 	Descriptor() pipelinetypes.SegmentDescriptor
-	// Process handles one input and emits zero or more outputs through "out" callback.
+	// Process handles one input business record and emits zero or more output business
+	// records through the "out" callback.
 	//
-	// The out callback is framework-owned. Once out returns nil, that output is
-	// durably accepted by the framework and should not be repeated in Snapshot.
+	// The out callback is framework-owned. Once out returns nil, that business output
+	// is durably accepted by the framework and should not be repeated on recovery.
 	//
 	// When PauseRequested becomes true, Process may stop at a segment-defined safe
-	// point and return ProcessPaused plus resumable snapshot bytes.
-	Process(ctx ProcessContext, in pipelinetypes.SegmentRecord[TIn], out func(pipelinetypes.SegmentRecord[TOut]) error) (ProcessResult, error)
-	// Restore loads previously captured resumable state into the segment instance
-	// before Process is invoked again for the same logical input.
-	Restore(ctx context.Context, snapshot []byte) error
+	// point and return ProcessPaused. Any segment-specific recovery state is
+	// application-owned rather than framework-managed.
+	Process(ctx ProcessContext, in pipelinetypes.SegmentInput[TIn], out func(pipelinetypes.SegmentOutput[TOut]) error) (ProcessResult, error)
 	// Done allows optional segment-specific finalize work once upstream has finished.
 	Done(ctx context.Context) error
+}
+
+// RecoveringSegment adds an explicit recovery hook for resumed work.
+//
+// The framework calls Recover before Process when queued work is resumed after a
+// cooperative pause or an unclean shutdown. Segment implementations should use
+// this hook to reload any application-owned progress needed to continue work.
+type RecoveringSegment[TIn, TOut any] interface {
+	Segment[TIn, TOut]
+	Recover(ctx context.Context, in pipelinetypes.SegmentInput[TIn], info ResumeInfo) error
 }
 
 // CompensatingSegment adds rollback support for segments with non-idempotent side effects.

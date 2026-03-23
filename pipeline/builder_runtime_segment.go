@@ -11,7 +11,7 @@ type runtimeSegment struct {
 	value             reflect.Value
 	desc              SegmentDescriptor
 	processMethod     reflect.Value
-	restoreMethod     reflect.Value
+	recoverMethod     reflect.Value
 	doneMethod        reflect.Value
 	compensatorMethod reflect.Value
 	inputRecordType   reflect.Type
@@ -51,10 +51,10 @@ func newRuntimeSegment(segment any) (runtimeSegment, error) {
 
 	descMethod := value.MethodByName("Descriptor")
 	processMethod := value.MethodByName("Process")
-	restoreMethod := value.MethodByName("Restore")
+	recoverMethod := value.MethodByName("Recover")
 	doneMethod := value.MethodByName("Done")
 	compensatorMethod := value.MethodByName("Compensator")
-	if !descMethod.IsValid() || !processMethod.IsValid() || !restoreMethod.IsValid() || !doneMethod.IsValid() {
+	if !descMethod.IsValid() || !processMethod.IsValid() || !doneMethod.IsValid() {
 		return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
 	}
 
@@ -67,7 +67,7 @@ func newRuntimeSegment(segment any) (runtimeSegment, error) {
 		return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
 	}
 
-	// Require Process(ProcessContext, SegmentRecord[TIn], func(SegmentRecord[TOut]) error) (ProcessResult, error).
+	// Require Process(ProcessContext, SegmentInput[TIn], func(SegmentOutput[TOut]) error) (ProcessResult, error).
 	processType := processMethod.Type()
 	if processType.NumIn() != 3 || processType.NumOut() != 2 {
 		return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
@@ -80,7 +80,7 @@ func newRuntimeSegment(segment any) (runtimeSegment, error) {
 	}
 
 	inputRecordType := processType.In(1)
-	if !isRecordShape(inputRecordType) {
+	if !isSegmentInputShape(inputRecordType) {
 		return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
 	}
 
@@ -92,16 +92,16 @@ func newRuntimeSegment(segment any) (runtimeSegment, error) {
 		return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
 	}
 	outputRecordType := callbackType.In(0)
-	if !isRecordShape(outputRecordType) {
+	if !isSegmentOutputShape(outputRecordType) {
 		return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
 	}
 
-	if restoreMethod.IsValid() {
-		restoreType := restoreMethod.Type()
-		if restoreType.NumIn() != 2 || restoreType.In(0) != contextType || restoreType.In(1) != bytesType || restoreType.NumOut() != 1 {
+	if recoverMethod.IsValid() {
+		recoverType := recoverMethod.Type()
+		if recoverType.NumIn() != 3 || recoverType.In(0) != contextType || recoverType.In(1) != inputRecordType || recoverType.In(2) != resumeInfoType || recoverType.NumOut() != 1 {
 			return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
 		}
-		if !restoreType.Out(0).Implements(errorType) {
+		if !recoverType.Out(0).Implements(errorType) {
 			return runtimeSegment{}, ErrBuilderUnsupportedSegmentShape
 		}
 	}
@@ -110,7 +110,7 @@ func newRuntimeSegment(segment any) (runtimeSegment, error) {
 		value:             value,
 		desc:              desc,
 		processMethod:     processMethod,
-		restoreMethod:     restoreMethod,
+		recoverMethod:     recoverMethod,
 		doneMethod:        doneMethod,
 		compensatorMethod: compensatorMethod,
 		inputRecordType:   inputRecordType,
@@ -129,6 +129,10 @@ func validateRuntimeSegment(segment runtimeSegment) error {
 	return nil
 }
 
+func (s runtimeSegment) canRecover() bool {
+	return s.recoverMethod.IsValid()
+}
+
 func (s runtimeSegment) compensatorNil() bool {
 	if !s.compensatorMethod.IsValid() {
 		return true
@@ -140,28 +144,52 @@ func (s runtimeSegment) compensatorNil() bool {
 	return isNilReflectValue(values[0])
 }
 
-// processJSON adapts the runtime's JSON envelope into the segment's typed Process call and captures typed outputs back as JSON.
-func (s runtimeSegment) processJSON(ctx context.Context, in runtimeSegmentInput) ([]runtimeSegmentOutput, ProcessResult, error) {
-	record := reflect.New(s.inputRecordType).Elem()
-	record.FieldByName("RecordID").Set(reflect.ValueOf(in.originRecordID))
-	setMetadataField(record.FieldByName("Metadata"), cloneMetadata(in.metadata))
-
-	payloadField, _ := s.inputRecordType.FieldByName("Payload")
-	inputPayload, err := jsonValueForPayloadType(payloadField.Type, in.payload)
-	if err != nil {
-		return nil, ProcessResult{}, fmt.Errorf("segment %q input decode failed: %w", s.desc.ID, err)
+func (s runtimeSegment) compensate(ctx context.Context, recordID RecordID, attemptID AttemptID, reason error) error {
+	if s.compensatorNil() {
+		return nil
 	}
-	record.FieldByName("Payload").Set(inputPayload)
+	values := s.compensatorMethod.Call(nil)
+	if len(values) != 1 {
+		return ErrBuilderUnsupportedSegmentShape
+	}
+	compensator, ok := values[0].Interface().(Compensator)
+	if !ok || compensator == nil {
+		return ErrBuilderUnsupportedSegmentShape
+	}
+	return compensator.Compensate(ctx, recordID, attemptID, reason)
+}
 
-	outputs := make([]runtimeSegmentOutput, 0, 1)
+func (s runtimeSegment) recover(ctx context.Context, in runtimeSegmentInput, info ResumeInfo) error {
+	if !s.canRecover() {
+		return nil
+	}
+	input, err := s.buildInputValue(in)
+	if err != nil {
+		return err
+	}
+	results := s.recoverMethod.Call([]reflect.Value{
+		reflect.ValueOf(ctx),
+		input,
+		reflect.ValueOf(info),
+	})
+	if len(results) != 1 {
+		return ErrBuilderUnsupportedSegmentShape
+	}
+	if errValue := results[0].Interface(); errValue != nil {
+		return errValue.(error)
+	}
+	return nil
+}
+
+// processJSON adapts the runtime's JSON envelope into the segment's typed Process call.
+func (s runtimeSegment) processJSON(ctx context.Context, in runtimeSegmentInput, emit func(runtimeSegmentOutput) error) (ProcessResult, error) {
+	input, err := s.buildInputValue(in)
+	if err != nil {
+		return ProcessResult{}, err
+	}
+
 	callback := reflect.MakeFunc(s.outputCallback, func(args []reflect.Value) []reflect.Value {
 		outRecord := args[0]
-
-		if recordIDField := outRecord.FieldByName("RecordID"); recordIDField.IsValid() {
-			if outRecordID, ok := recordIDField.Interface().(RecordID); ok && outRecordID != "" && outRecordID != in.originRecordID {
-				return []reflect.Value{reflect.ValueOf(fmt.Errorf("%w: segment=%q got=%q want=%q", ErrBuilderSegmentRecordIDMismatch, s.desc.ID, outRecordID, in.originRecordID))}
-			}
-		}
 
 		payload, marshalErr := json.Marshal(outRecord.FieldByName("Payload").Interface())
 		if marshalErr != nil {
@@ -173,10 +201,12 @@ func (s runtimeSegment) processJSON(ctx context.Context, in runtimeSegmentInput)
 			metadata = cloneMetadata(metadataField.Interface().(map[string]string))
 		}
 
-		outputs = append(outputs, runtimeSegmentOutput{
+		if err := emit(runtimeSegmentOutput{
 			payload:  payload,
 			metadata: metadata,
-		})
+		}); err != nil {
+			return []reflect.Value{reflect.ValueOf(err)}
+		}
 		return []reflect.Value{reflect.Zero(errorType)}
 	})
 
@@ -185,34 +215,34 @@ func (s runtimeSegment) processJSON(ctx context.Context, in runtimeSegmentInput)
 			Context:        ctx,
 			pauseRequested: in.pauseRequested,
 		}),
-		record,
+		input,
 		callback,
 	})
 	if len(results) != 2 {
-		return nil, ProcessResult{}, ErrBuilderUnsupportedSegmentShape
+		return ProcessResult{}, ErrBuilderUnsupportedSegmentShape
 	}
 	result, ok := results[0].Interface().(ProcessResult)
 	if !ok {
-		return nil, ProcessResult{}, ErrBuilderUnsupportedSegmentShape
+		return ProcessResult{}, ErrBuilderUnsupportedSegmentShape
 	}
 	if errValue := results[1].Interface(); errValue != nil {
-		return nil, ProcessResult{}, errValue.(error)
+		return ProcessResult{}, errValue.(error)
 	}
-	return outputs, result, nil
+	return result, nil
 }
 
-func (s runtimeSegment) restore(ctx context.Context, snapshot []byte) error {
-	results := s.restoreMethod.Call([]reflect.Value{
-		reflect.ValueOf(ctx),
-		reflect.ValueOf(snapshot),
-	})
-	if len(results) != 1 {
-		return ErrBuilderUnsupportedSegmentShape
+func (s runtimeSegment) buildInputValue(in runtimeSegmentInput) (reflect.Value, error) {
+	input := reflect.New(s.inputRecordType).Elem()
+	input.FieldByName("SourceRecordID").Set(reflect.ValueOf(in.originRecordID))
+	setMetadataField(input.FieldByName("Metadata"), cloneMetadata(in.metadata))
+
+	payloadField, _ := s.inputRecordType.FieldByName("Payload")
+	inputPayload, err := jsonValueForPayloadType(payloadField.Type, in.payload)
+	if err != nil {
+		return reflect.Value{}, fmt.Errorf("segment %q input decode failed: %w", s.desc.ID, err)
 	}
-	if errValue := results[0].Interface(); errValue != nil {
-		return errValue.(error)
-	}
-	return nil
+	input.FieldByName("Payload").Set(inputPayload)
+	return input, nil
 }
 
 func (s runtimeSegment) done(ctx context.Context) error {

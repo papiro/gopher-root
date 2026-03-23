@@ -18,7 +18,8 @@ type (
 	AckStatus       = pipelinetypes.AckStatus
 
 	Envelope[T any]      = pipelinetypes.Envelope[T]
-	SegmentRecord[T any] = pipelinetypes.SegmentRecord[T]
+	SegmentInput[T any]  = pipelinetypes.SegmentInput[T]
+	SegmentOutput[T any] = pipelinetypes.SegmentOutput[T]
 	SourceRecord[T any]  = pipelinetypes.SourceRecord[T]
 
 	SegmentAck         = pipelinetypes.SegmentAck
@@ -34,18 +35,27 @@ type (
 	SinkWithDone[T any] = contracts.SinkWithDone[T]
 	Runtime             = contracts.Runtime
 
-	Checkpoint                         = contracts.Checkpoint
-	CheckpointFrame                    = contracts.CheckpointFrame
-	SegmentState                       = contracts.SegmentState
-	SegmentCommit                      = contracts.SegmentCommit
+	SourceResumeState                  = contracts.SourceResumeState
+	SourceProgress                     = contracts.SourceProgress
+	StartedRecord                      = contracts.StartedRecord
+	PendingSegmentWork                 = contracts.PendingSegmentWork
+	PendingSegmentWorkKey              = contracts.PendingSegmentWorkKey
+	SegmentProgressStatus              = contracts.SegmentProgressStatus
+	SegmentProgress                    = contracts.SegmentProgress
+	RuntimeDelta                       = contracts.RuntimeDelta
 	SegmentOutputRecord                = contracts.SegmentOutputRecord
 	TerminalRecord                     = contracts.TerminalRecord
+	DeterministicSegmentResult         = contracts.DeterministicSegmentResult
+	DeterministicSegmentOutput         = contracts.DeterministicSegmentOutput
 	Compensator                        = contracts.Compensator
 	ProcessContext                     = contracts.ProcessContext
+	ResumeReason                       = contracts.ResumeReason
+	ResumeInfo                         = contracts.ResumeInfo
 	ProcessStatus                      = contracts.ProcessStatus
 	ProcessResult                      = contracts.ProcessResult
 	Coupling                           = contracts.Coupling
 	Segment[TIn, TOut any]             = contracts.Segment[TIn, TOut]
+	RecoveringSegment[TIn, TOut any]   = contracts.RecoveringSegment[TIn, TOut]
 	CompensatingSegment[TIn, TOut any] = contracts.CompensatingSegment[TIn, TOut]
 	Engine[TIn, TOut any]              = contracts.Engine[TIn, TOut]
 )
@@ -60,6 +70,16 @@ const (
 
 	ProcessCompleted ProcessStatus = contracts.ProcessCompleted
 	ProcessPaused    ProcessStatus = contracts.ProcessPaused
+
+	ResumeReasonUnknown ResumeReason = contracts.ResumeReasonUnknown
+	ResumeAfterPause   ResumeReason = contracts.ResumeAfterPause
+	ResumeAfterCrash   ResumeReason = contracts.ResumeAfterCrash
+
+	SegmentInProgress     SegmentProgressStatus = contracts.SegmentInProgress
+	SegmentPaused         SegmentProgressStatus = contracts.SegmentPaused
+	SegmentCompleted      SegmentProgressStatus = contracts.SegmentCompleted
+	SegmentRetryableFailed SegmentProgressStatus = contracts.SegmentRetryableFailed
+	SegmentTerminalFailed SegmentProgressStatus = contracts.SegmentTerminalFailed
 )
 
 var (

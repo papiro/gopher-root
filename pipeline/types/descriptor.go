@@ -9,8 +9,9 @@ type SegmentDescriptor struct {
 	// Deterministic declares whether identical logical input always yields identical logical output.
 	// Nil means default deterministic behavior (true).
 	Deterministic *bool
-	// Version is segment-owned code/schema version used for state migrations.
-	Version string
+	// CompatibilityVersion changes only when persisted inputs, snapshots, or outputs
+	// from older runs are no longer safe to reuse.
+	CompatibilityVersion string
 }
 
 // IsDeterministic returns true when descriptor behavior is deterministic.

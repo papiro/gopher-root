@@ -21,10 +21,10 @@ for {
     if err != nil { return err }
     if !ok { break } // end-of-stream
     // segments see only the stable source identity plus business payload
-    in := SegmentRecord[T]{
-        RecordID: record.RecordID,
-        Payload:  record.Payload,
-        Metadata: record.Metadata,
+    in := SegmentInput[T]{
+        SourceRecordID: record.RecordID,
+        Payload:        record.Payload,
+        Metadata:       record.Metadata,
     }
     _ = in // process one item
 }

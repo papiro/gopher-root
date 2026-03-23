@@ -116,18 +116,17 @@ func (f fakeSegment) Descriptor() pipeline.SegmentDescriptor { return f.desc }
 
 func (f fakeSegment) Process(
 	_ pipeline.ProcessContext,
-	in pipeline.SegmentRecord[string],
-	out func(pipeline.SegmentRecord[string]) error,
+	in pipeline.SegmentInput[string],
+	out func(pipeline.SegmentOutput[string]) error,
 ) (pipeline.ProcessResult, error) {
-	if err := out(in); err != nil {
+	if err := out(pipeline.SegmentOutput[string]{Payload: in.Payload, Metadata: in.Metadata}); err != nil {
 		return pipeline.ProcessResult{}, err
 	}
 	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
 }
 
-func (f fakeSegment) Restore(context.Context, []byte) error { return nil }
-func (f fakeSegment) Done(context.Context) error            { return nil }
-func (f fakeSegment) Compensator() pipeline.Compensator     { return f.compensator }
+func (f fakeSegment) Done(context.Context) error        { return nil }
+func (f fakeSegment) Compensator() pipeline.Compensator { return f.compensator }
 
 type fakeSegmentNoCompensator struct {
 	desc pipeline.SegmentDescriptor
@@ -137,17 +136,16 @@ func (f fakeSegmentNoCompensator) Descriptor() pipeline.SegmentDescriptor { retu
 
 func (f fakeSegmentNoCompensator) Process(
 	_ pipeline.ProcessContext,
-	in pipeline.SegmentRecord[string],
-	out func(pipeline.SegmentRecord[string]) error,
+	in pipeline.SegmentInput[string],
+	out func(pipeline.SegmentOutput[string]) error,
 ) (pipeline.ProcessResult, error) {
-	if err := out(in); err != nil {
+	if err := out(pipeline.SegmentOutput[string]{Payload: in.Payload, Metadata: in.Metadata}); err != nil {
 		return pipeline.ProcessResult{}, err
 	}
 	return pipeline.ProcessResult{Status: pipeline.ProcessCompleted}, nil
 }
 
-func (f fakeSegmentNoCompensator) Restore(context.Context, []byte) error { return nil }
-func (f fakeSegmentNoCompensator) Done(context.Context) error            { return nil }
+func (f fakeSegmentNoCompensator) Done(context.Context) error { return nil }
 
 func TestValidateSegmentContract(t *testing.T) {
 	t.Parallel()
@@ -163,7 +161,7 @@ func TestValidateSegmentContract(t *testing.T) {
 				desc: pipeline.SegmentDescriptor{
 					ID:          "segment-A",
 					Idempotency: pipeline.Idempotent,
-					Version:     "v1",
+					CompatibilityVersion: "v1",
 				},
 			},
 			wantErr: nil,
@@ -174,7 +172,7 @@ func TestValidateSegmentContract(t *testing.T) {
 				desc: pipeline.SegmentDescriptor{
 					ID:          "segment-B",
 					Idempotency: pipeline.NonIdempotent,
-					Version:     "v1",
+					CompatibilityVersion: "v1",
 				},
 				compensator: nil,
 			},
@@ -186,7 +184,7 @@ func TestValidateSegmentContract(t *testing.T) {
 				desc: pipeline.SegmentDescriptor{
 					ID:          "segment-B2",
 					Idempotency: pipeline.NonIdempotent,
-					Version:     "v1",
+					CompatibilityVersion: "v1",
 				},
 			},
 			wantErr: pipeline.ErrCompensatorRequired,
@@ -197,7 +195,7 @@ func TestValidateSegmentContract(t *testing.T) {
 				desc: pipeline.SegmentDescriptor{
 					ID:          "segment-C",
 					Idempotency: pipeline.NonIdempotent,
-					Version:     "v1",
+					CompatibilityVersion: "v1",
 				},
 				compensator: noopCompensator{},
 			},
@@ -209,7 +207,7 @@ func TestValidateSegmentContract(t *testing.T) {
 				desc: pipeline.SegmentDescriptor{
 					ID:          "",
 					Idempotency: pipeline.Idempotent,
-					Version:     "v1",
+					CompatibilityVersion: "v1",
 				},
 			},
 			wantErr: pipeline.ErrSegmentIDRequired,
@@ -443,84 +441,212 @@ func TestRuntimeContractShape(t *testing.T) {
 	t.Parallel()
 
 	runtime := pipeline.NewInMemoryRuntime()
-	if err := runtime.SaveCheckpoint(context.Background(), pipeline.Checkpoint{
+	if err := runtime.SaveSourceResumeState(context.Background(), pipeline.SourceResumeState{
 		PipelineID:   "pipe-1",
 		SourceCursor: []byte("cursor"),
 		Paused:       true,
 	}); err != nil {
-		t.Fatalf("save checkpoint failed: %v", err)
+		t.Fatalf("save source resume state failed: %v", err)
 	}
 
-	checkpoint, ok, err := runtime.LoadCheckpoint(context.Background(), "pipe-1")
+	resumeState, ok, err := runtime.LoadSourceResumeState(context.Background(), "pipe-1")
 	if err != nil {
-		t.Fatalf("load checkpoint failed: %v", err)
+		t.Fatalf("load source resume state failed: %v", err)
 	}
 	if !ok {
-		t.Fatalf("expected checkpoint to be found")
+		t.Fatalf("expected source resume state to be found")
 	}
-	if !checkpoint.Paused || string(checkpoint.SourceCursor) != "cursor" {
-		t.Fatalf("unexpected checkpoint: %+v", checkpoint)
-	}
-
-	if err := runtime.SaveSegmentState(context.Background(), pipeline.SegmentState{
-		PipelineID: "pipe-1",
-		SegmentID:  "segment-a",
-		RecordID:   "rec-1",
-		AttemptID:  1,
-		Snapshot:   []byte("state"),
-	}); err != nil {
-		t.Fatalf("save segment state failed: %v", err)
+	if !resumeState.Paused || string(resumeState.SourceCursor) != "cursor" {
+		t.Fatalf("unexpected source resume state: %+v", resumeState)
 	}
 
-	state, ok, err := runtime.LoadSegmentState(context.Background(), "pipe-1", "segment-a", "rec-1", 1)
-	if err != nil {
-		t.Fatalf("load segment state failed: %v", err)
-	}
-	if !ok || string(state.Snapshot) != "state" {
-		t.Fatalf("unexpected segment state: ok=%v state=%+v", ok, state)
-	}
-
-	if err := runtime.CommitSegment(context.Background(), pipeline.SegmentCommit{
-		PipelineID:     "pipe-1",
-		OriginRecordID: "rec-1",
-		RecordID:       "rec-1/segment-a",
-		SegmentID:      "segment-a",
-		AttemptID:      1,
-		Status:         pipeline.AckCommitted,
-	}); err != nil {
-		t.Fatalf("commit segment failed: %v", err)
-	}
-
-	got, ok, err := runtime.Ack(context.Background(), "pipe-1", "segment-a", "rec-1/segment-a")
-	if err != nil {
-		t.Fatalf("get ack failed: %v", err)
-	}
-	if !ok {
-		t.Fatalf("expected ack to be found")
-	}
-	if got.Status != pipeline.AckCommitted {
-		t.Fatalf("unexpected ack status: %v", got.Status)
-	}
-
-	if err := runtime.CommitSegmentOutput(context.Background(), pipeline.SegmentOutputRecord{
-		PipelineID: "pipe-1",
-		SegmentID:  "segment-a",
-		Item: pipeline.Envelope[json.RawMessage]{
-			OriginRecordID: "rec-1",
-			RecordID:       "rec-1/segment-a",
-			AttemptID:      1,
-			Payload:        json.RawMessage(`{"value":"ok"}`),
+	if err := runtime.CommitSourceProgress(context.Background(), pipeline.SourceProgress{
+		ResumeState: pipeline.SourceResumeState{
+			PipelineID:   "pipe-1",
+			SourceCursor: []byte("cursor-1b"),
+			Paused:       false,
+		},
+		Started: pipeline.StartedRecord{
+			PipelineID: "pipe-1",
+			Item: pipeline.Envelope[json.RawMessage]{
+				OriginRecordID: "rec-1",
+				RecordID:       "rec-1",
+				AttemptID:      1,
+				Payload:        json.RawMessage(`{"source":"ok"}`),
+			},
+		},
+		PendingWork: pipeline.PendingSegmentWork{
+			PipelineID:    "pipe-1",
+			NextSegmentID: "segment-a",
+			Item: pipeline.Envelope[json.RawMessage]{
+				OriginRecordID: "rec-1",
+				RecordID:       "rec-1",
+				AttemptID:      1,
+				Payload:        json.RawMessage(`{"source":"ok"}`),
+			},
 		},
 	}); err != nil {
-		t.Fatalf("commit segment output failed: %v", err)
+		t.Fatalf("commit source progress failed: %v", err)
 	}
 
-	outputs, err := runtime.SegmentOutputs(context.Background(), "pipe-1", "segment-a", "rec-1")
+	pending, err := runtime.PendingWork(context.Background(), "pipe-1")
 	if err != nil {
-		t.Fatalf("segment outputs failed: %v", err)
+		t.Fatalf("pending work failed: %v", err)
 	}
-	if len(outputs) != 1 || string(outputs[0].Payload) != `{"value":"ok"}` {
-		t.Fatalf("unexpected segment outputs: %+v", outputs)
+	if len(pending) != 1 || pending[0].NextSegmentID != "segment-a" || pending[0].Item.RecordID != "rec-1" {
+		t.Fatalf("unexpected pending work: %+v", pending)
+	}
+
+	started, err := runtime.SourceRecords(context.Background(), "pipe-1")
+	if err != nil {
+		t.Fatalf("source records failed: %v", err)
+	}
+	if len(started) != 1 || started[0].RecordID != "rec-1" {
+		t.Fatalf("unexpected source records: %+v", started)
+	}
+
+	if err := runtime.CommitProgressUpdate(context.Background(), pipeline.RuntimeDelta{
+		Progress: &pipeline.SegmentProgress{
+			PipelineID:           "pipe-1",
+			SegmentID:            "segment-a",
+			CompatibilityVersion: "v1",
+			RecordID:             "rec-1",
+			AttemptID:            1,
+			InputChecksum:        "checksum-1",
+			Status:               pipeline.SegmentCompleted,
+			EmittedCount:         1,
+		},
+		DeletePendingWork: &pipeline.PendingSegmentWorkKey{
+			PipelineID:    "pipe-1",
+			NextSegmentID: "segment-a",
+			RecordID:      "rec-1",
+		},
+		OutputRecord: &pipeline.SegmentOutputRecord{
+			PipelineID:           "pipe-1",
+			SegmentID:            "segment-a",
+			CompatibilityVersion: "v1",
+			InputChecksum:        "checksum-1",
+			Item: pipeline.Envelope[json.RawMessage]{
+				OriginRecordID: "rec-1",
+				RecordID:       "rec-1/segment-a",
+				AttemptID:      1,
+				ParentIDs:      []pipeline.RecordID{"rec-1"},
+				Payload:        json.RawMessage(`{"value":"ok"}`),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("commit progress update failed: %v", err)
+	}
+
+	progress, ok, err := runtime.LoadSegmentProgress(context.Background(), "pipe-1", "segment-a", "rec-1", 1)
+	if err != nil {
+		t.Fatalf("load segment progress failed: %v", err)
+	}
+	if !ok || progress.Status != pipeline.SegmentCompleted || progress.EmittedCount != 1 {
+		t.Fatalf("unexpected segment progress: ok=%v progress=%+v", ok, progress)
+	}
+
+	if err := runtime.CommitSourceProgress(context.Background(), pipeline.SourceProgress{
+		ResumeState: pipeline.SourceResumeState{
+			PipelineID:   "pipe-2",
+			SourceCursor: []byte("cursor-2"),
+			Paused:       false,
+		},
+		Started: pipeline.StartedRecord{
+			PipelineID: "pipe-2",
+			Item: pipeline.Envelope[json.RawMessage]{
+				OriginRecordID: "rec-2",
+				RecordID:       "rec-2",
+				AttemptID:      1,
+				Payload:        json.RawMessage(`{"source":"recovery"}`),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("commit source progress failed: %v", err)
+	}
+
+	if err := runtime.CommitProgressUpdate(context.Background(), pipeline.RuntimeDelta{
+		Progress: &pipeline.SegmentProgress{
+			PipelineID:           "pipe-2",
+			SegmentID:            "segment-b",
+			CompatibilityVersion: "v1",
+			RecordID:             "rec-2",
+			AttemptID:            1,
+			InputChecksum:        "checksum-2",
+			Status:               pipeline.SegmentCompleted,
+			EmittedCount:         1,
+		},
+		OutputRecord: &pipeline.SegmentOutputRecord{
+			PipelineID:           "pipe-2",
+			SegmentID:            "segment-b",
+			CompatibilityVersion: "v1",
+			InputChecksum:        "checksum-2",
+			Item: pipeline.Envelope[json.RawMessage]{
+				OriginRecordID: "rec-2",
+				RecordID:       "rec-2/segment-b",
+				AttemptID:      1,
+				ParentIDs:      []pipeline.RecordID{"rec-2"},
+				Payload:        json.RawMessage(`{"value":"recovery"}`),
+			},
+		},
+		TerminalRecord: &pipeline.TerminalRecord{
+			PipelineID: "pipe-2",
+			Item: pipeline.Envelope[json.RawMessage]{
+				OriginRecordID: "rec-2",
+				RecordID:       "rec-2/terminal",
+				AttemptID:      1,
+				Payload:        json.RawMessage(`"done"`),
+			},
+		},
+		DeterministicResult: &pipeline.DeterministicSegmentResult{
+			PipelineID:           "pipe-2",
+			SegmentID:            "segment-b",
+			CompatibilityVersion: "v1",
+			InputChecksum:        "checksum-2",
+			Outputs: []pipeline.DeterministicSegmentOutput{{
+				Payload: json.RawMessage(`{"value":"recovery"}`),
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("commit progress update failed: %v", err)
+	}
+
+	recoveryResumeState, ok, err := runtime.LoadSourceResumeState(context.Background(), "pipe-2")
+	if err != nil {
+		t.Fatalf("load source resume state failed: %v", err)
+	}
+	if !ok || string(recoveryResumeState.SourceCursor) != "cursor-2" {
+		t.Fatalf("unexpected source resume state: ok=%v state=%+v", ok, recoveryResumeState)
+	}
+
+	trace, err := runtime.Trace(context.Background(), "pipe-2", "rec-2")
+	if err != nil {
+		t.Fatalf("trace failed: %v", err)
+	}
+	if len(trace) != 1 || string(trace[0].Payload) != `"done"` {
+		t.Fatalf("unexpected trace outputs: %+v", trace)
+	}
+
+	deterministic, ok, err := runtime.DeterministicResult(context.Background(), "pipe-2", "segment-b", "v1", "checksum-2")
+	if err != nil {
+		t.Fatalf("deterministic result failed: %v", err)
+	}
+	if !ok || len(deterministic.Outputs) != 1 || string(deterministic.Outputs[0].Payload) != `{"value":"recovery"}` {
+		t.Fatalf("unexpected deterministic result: ok=%v result=%+v", ok, deterministic)
+	}
+
+	if err := runtime.ResetPipeline(context.Background(), "pipe-2"); err != nil {
+		t.Fatalf("reset pipeline failed: %v", err)
+	}
+	if _, ok, err := runtime.LoadSourceResumeState(context.Background(), "pipe-2"); err != nil {
+		t.Fatalf("load reset source resume state failed: %v", err)
+	} else if ok {
+		t.Fatalf("expected reset pipeline source resume state to be removed")
+	}
+	if _, ok, err := runtime.DeterministicResult(context.Background(), "pipe-2", "segment-b", "v1", "checksum-2"); err != nil {
+		t.Fatalf("load reset deterministic result failed: %v", err)
+	} else if ok {
+		t.Fatalf("expected reset pipeline deterministic cache to be removed")
 	}
 }
 
@@ -574,9 +700,9 @@ func TestValidateTopologyContractShape(t *testing.T) {
 	t.Parallel()
 
 	baseSegments := []pipeline.SegmentDescriptor{
-		{ID: "segment-source", Idempotency: pipeline.Idempotent, Version: "v1"},
-		{ID: "segment-transform", Idempotency: pipeline.Idempotent, Version: "v1"},
-		{ID: "segment-sink", Idempotency: pipeline.Idempotent, Version: "v1"},
+		{ID: "segment-source", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
+		{ID: "segment-transform", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
+		{ID: "segment-sink", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
 	}
 	baseCouplings := []pipeline.CouplingDescriptor{
 		{ID: "c-source-transform", FromSegment: "segment-source", ToSegment: "segment-transform"},
@@ -664,9 +790,9 @@ func TestValidateTopologyContractShape(t *testing.T) {
 
 		cfg := pipeline.EngineConfig{
 			Segments: []pipeline.SegmentDescriptor{
-				{ID: "segment-source", Idempotency: pipeline.Idempotent, Version: "v1"},
-				{ID: "segment-a", Idempotency: pipeline.Idempotent, Version: "v1"},
-				{ID: "segment-b", Idempotency: pipeline.Idempotent, Version: "v1"},
+				{ID: "segment-source", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
+				{ID: "segment-a", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
+				{ID: "segment-b", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
 			},
 			Couplings: []pipeline.CouplingDescriptor{
 				{ID: "c-source-a"},
@@ -692,8 +818,8 @@ func TestValidateTopologyContractShape(t *testing.T) {
 
 		cfg := pipeline.EngineConfig{
 			Segments: []pipeline.SegmentDescriptor{
-				{ID: "segment-a", Idempotency: pipeline.Idempotent, Version: "v1"},
-				{ID: "segment-b", Idempotency: pipeline.Idempotent, Version: "v1"},
+				{ID: "segment-a", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
+				{ID: "segment-b", Idempotency: pipeline.Idempotent, CompatibilityVersion: "v1"},
 			},
 			Couplings: []pipeline.CouplingDescriptor{
 				{ID: "c-a-b"},

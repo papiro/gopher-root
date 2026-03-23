@@ -9,75 +9,103 @@ import (
 
 // Runtime persists framework-owned pipeline durability state.
 type Runtime interface {
-	// LoadCheckpoint retrieves the latest stored recovery boundary for one pipeline.
-	LoadCheckpoint(ctx context.Context, pipelineID string) (Checkpoint, bool, error)
-	// SaveCheckpoint persists the latest recovery boundary for one pipeline.
-	SaveCheckpoint(ctx context.Context, checkpoint Checkpoint) error
-	// SaveSegmentState persists one framework-managed in-flight segment snapshot.
-	SaveSegmentState(ctx context.Context, state SegmentState) error
-	// LoadSegmentState retrieves one framework-managed in-flight segment snapshot if present.
-	LoadSegmentState(ctx context.Context, pipelineID string, segment pipelinetypes.SegmentID, record pipelinetypes.RecordID, attempt pipelinetypes.AttemptID) (SegmentState, bool, error)
-	// DeleteSegmentState removes one framework-managed in-flight segment snapshot once it is no longer needed.
-	DeleteSegmentState(ctx context.Context, pipelineID string, segment pipelinetypes.SegmentID, record pipelinetypes.RecordID, attempt pipelinetypes.AttemptID) error
-	// CommitSegment persists one segment outcome plus lineage context for one record.
-	CommitSegment(ctx context.Context, commit SegmentCommit) error
-	// CommitSegmentOutput persists one intermediate segment output so prior stages can be recalled during replay workflows.
-	CommitSegmentOutput(ctx context.Context, output SegmentOutputRecord) error
-	// CommitTerminal persists one terminal output so traces survive resume and restart.
-	CommitTerminal(ctx context.Context, terminal TerminalRecord) error
-	// SegmentOutputs returns intermediate outputs emitted by one segment for one origin record.
-	SegmentOutputs(ctx context.Context, pipelineID string, segment pipelinetypes.SegmentID, origin pipelinetypes.RecordID) ([]pipelinetypes.Envelope[json.RawMessage], error)
+	// LoadSourceResumeState retrieves the latest stored source resume state for one pipeline.
+	LoadSourceResumeState(ctx context.Context, pipelineID string) (SourceResumeState, bool, error)
+	// SaveSourceResumeState persists the latest source resume state for one pipeline.
+	SaveSourceResumeState(ctx context.Context, recovery SourceResumeState) error
+	// CommitSourceProgress atomically persists the latest source cursor together with
+	// one newly started source record and its initial pending segment work item.
+	CommitSourceProgress(ctx context.Context, progress SourceProgress) error
+	// CommitProgressUpdate atomically persists one runtime delta.
+	CommitProgressUpdate(ctx context.Context, update RuntimeDelta) error
+	// DeterministicResult loads one reusable deterministic segment result if present.
+	DeterministicResult(ctx context.Context, pipelineID string, segment pipelinetypes.SegmentID, compatibilityVersion string, inputChecksum string) (DeterministicSegmentResult, bool, error)
+	// ResetPipeline removes framework-owned state for one pipeline so execution can
+	// restart from source zero.
+	ResetPipeline(ctx context.Context, pipelineID string) error
+	// SourceRecords returns all source records that have durably started for one pipeline.
+	SourceRecords(ctx context.Context, pipelineID string) ([]pipelinetypes.Envelope[json.RawMessage], error)
+	// PendingWork returns all pending segment work items for one pipeline in queue order.
+	PendingWork(ctx context.Context, pipelineID string) ([]PendingSegmentWork, error)
+	// LoadSegmentProgress retrieves one segment progress row if present.
+	LoadSegmentProgress(ctx context.Context, pipelineID string, segment pipelinetypes.SegmentID, record pipelinetypes.RecordID, attempt pipelinetypes.AttemptID) (SegmentProgress, bool, error)
 	// Trace returns terminal outputs derived from one source record identity.
 	Trace(ctx context.Context, pipelineID string, origin pipelinetypes.RecordID) ([]pipelinetypes.Envelope[json.RawMessage], error)
-	// Ack returns the latest durable segment acknowledgment for one record if present.
-	Ack(ctx context.Context, pipelineID string, segment pipelinetypes.SegmentID, record pipelinetypes.RecordID) (pipelinetypes.SegmentAck, bool, error)
 }
 
-// Checkpoint is the latest recoverable boundary for one pipeline.
-type Checkpoint struct {
+// SourceResumeState captures the source-side state needed to resume one pipeline.
+//
+// It does not describe segment frontier or in-flight work. Those live in
+// PendingSegmentWork and SegmentProgress.
+type SourceResumeState struct {
 	PipelineID   string
 	SourceCursor []byte
-	Frontier     []CheckpointFrame
 	Paused       bool
 }
 
-// CheckpointFrame captures one in-flight frontier item that should resume at one specific segment.
-//
-// Payload is the original input that should be passed to NextSegmentID when the
-// pipeline resumes from this checkpoint.
-type CheckpointFrame struct {
-	OriginRecordID pipelinetypes.RecordID
-	RecordID       pipelinetypes.RecordID
-	AttemptID      pipelinetypes.AttemptID
-	ParentIDs      []pipelinetypes.RecordID
-	SegmentPath    []pipelinetypes.SegmentID
-	NextSegmentID  pipelinetypes.SegmentID
-	Payload        json.RawMessage
-	Metadata       map[string]string
+// SourceProgress captures one durable source advance.
+type SourceProgress struct {
+	ResumeState SourceResumeState
+	Started     StartedRecord
+	PendingWork PendingSegmentWork
 }
 
-// SegmentState captures framework-managed in-flight state for one segment at one resume boundary.
-//
-// This state is primarily used for pause/resume, but runtimes may also retain it
-// for replay, auditing, or incremental recomputation workflows.
-type SegmentState struct {
+// StartedRecord captures one source record that has durably entered the pipeline.
+type StartedRecord struct {
 	PipelineID string
-	SegmentID  pipelinetypes.SegmentID
-	RecordID   pipelinetypes.RecordID
-	AttemptID  pipelinetypes.AttemptID
-	Snapshot   []byte
+	Item       pipelinetypes.Envelope[json.RawMessage]
 }
 
-// SegmentCommit captures one framework-owned segment outcome.
-type SegmentCommit struct {
-	PipelineID     string
-	OriginRecordID pipelinetypes.RecordID
-	RecordID       pipelinetypes.RecordID
-	ParentIDs      []pipelinetypes.RecordID
-	SegmentID      pipelinetypes.SegmentID
-	AttemptID      pipelinetypes.AttemptID
-	Status         pipelinetypes.AckStatus
-	Err            error
+// PendingSegmentWork captures one queued segment input awaiting processing.
+type PendingSegmentWork struct {
+	PipelineID    string
+	NextSegmentID pipelinetypes.SegmentID
+	Item          pipelinetypes.Envelope[json.RawMessage]
+}
+
+// PendingSegmentWorkKey identifies one queued segment input.
+type PendingSegmentWorkKey struct {
+	PipelineID    string
+	NextSegmentID pipelinetypes.SegmentID
+	RecordID      pipelinetypes.RecordID
+}
+
+// SegmentProgressStatus describes the durable processing state for one queued segment input.
+type SegmentProgressStatus int
+
+const (
+	SegmentInProgress SegmentProgressStatus = iota
+	SegmentPaused
+	SegmentCompleted
+	SegmentRetryableFailed
+	SegmentTerminalFailed
+)
+
+// SegmentProgress captures the durable state of one segment input while it is being processed.
+type SegmentProgress struct {
+	PipelineID           string
+	SegmentID            pipelinetypes.SegmentID
+	CompatibilityVersion string
+	RecordID             pipelinetypes.RecordID
+	AttemptID            pipelinetypes.AttemptID
+	InputChecksum        string
+	Status               SegmentProgressStatus
+	EmittedCount         int
+}
+
+// RuntimeDelta captures one atomic durability delta for pipeline runtime state.
+//
+// It is not a full checkpoint or snapshot of the entire pipeline. Instead, each
+// value records one state transition, such as updating one segment progress row,
+// deleting one pending work item, enqueueing downstream work, or persisting one
+// emitted durable record.
+type RuntimeDelta struct {
+	Progress            *SegmentProgress
+	DeletePendingWork   *PendingSegmentWorkKey
+	EnqueuePendingWork  []PendingSegmentWork
+	OutputRecord        *SegmentOutputRecord
+	TerminalRecord      *TerminalRecord
+	DeterministicResult *DeterministicSegmentResult
 }
 
 // SegmentOutputRecord captures one intermediate output emitted by one segment.
@@ -85,13 +113,30 @@ type SegmentCommit struct {
 // Retaining intermediate outputs allows replay workflows to reuse prior segment
 // results up to a changed stage rather than recomputing the entire pipeline.
 type SegmentOutputRecord struct {
-	PipelineID string
-	SegmentID  pipelinetypes.SegmentID
-	Item       pipelinetypes.Envelope[json.RawMessage]
+	PipelineID           string
+	SegmentID            pipelinetypes.SegmentID
+	CompatibilityVersion string
+	InputChecksum        string
+	Item                 pipelinetypes.Envelope[json.RawMessage]
 }
 
 // TerminalRecord captures one framework-owned terminal output.
 type TerminalRecord struct {
 	PipelineID string
 	Item       pipelinetypes.Envelope[json.RawMessage]
+}
+
+// DeterministicSegmentResult captures reusable outputs for one deterministic segment input.
+type DeterministicSegmentResult struct {
+	PipelineID           string
+	SegmentID            pipelinetypes.SegmentID
+	CompatibilityVersion string
+	InputChecksum        string
+	Outputs              []DeterministicSegmentOutput
+}
+
+// DeterministicSegmentOutput captures one reusable deterministic output payload.
+type DeterministicSegmentOutput struct {
+	Payload  json.RawMessage
+	Metadata map[string]string
 }

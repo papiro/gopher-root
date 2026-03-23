@@ -46,9 +46,7 @@ func appendSegmentPath(path []SegmentID, next SegmentID) []SegmentID {
 
 func childRecordID(parent RecordID, segment SegmentID, idx, total int) RecordID {
 	base := string(parent) + "/" + string(segment)
-	if total <= 1 {
-		return RecordID(base)
-	}
+	_ = total
 	return RecordID(fmt.Sprintf("%s/%d", base, idx+1))
 }
 
@@ -81,11 +79,24 @@ func jsonValueForPayloadType(target reflect.Type, payload json.RawMessage) (refl
 	return decoded.Elem(), nil
 }
 
-func isRecordShape(t reflect.Type) bool {
+func isSegmentInputShape(t reflect.Type) bool {
 	if t.Kind() != reflect.Struct {
 		return false
 	}
-	if _, ok := t.FieldByName("RecordID"); !ok {
+	if _, ok := t.FieldByName("SourceRecordID"); !ok {
+		return false
+	}
+	if _, ok := t.FieldByName("Payload"); !ok {
+		return false
+	}
+	if _, ok := t.FieldByName("Metadata"); !ok {
+		return false
+	}
+	return true
+}
+
+func isSegmentOutputShape(t reflect.Type) bool {
+	if t.Kind() != reflect.Struct {
 		return false
 	}
 	if _, ok := t.FieldByName("Payload"); !ok {
@@ -120,6 +131,6 @@ var (
 	contextType        = reflect.TypeOf((*context.Context)(nil)).Elem()
 	processContextType = reflect.TypeOf((*ProcessContext)(nil)).Elem()
 	errorType          = reflect.TypeOf((*error)(nil)).Elem()
-	bytesType          = reflect.TypeOf([]byte(nil))
 	processResultType  = reflect.TypeOf(ProcessResult{})
+	resumeInfoType     = reflect.TypeOf(ResumeInfo{})
 )
